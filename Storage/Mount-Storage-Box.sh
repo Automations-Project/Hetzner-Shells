@@ -451,37 +451,51 @@ detect_system() {
     ARCH=$(uname -m)
     echo -e "  Architecture: ${WHITE}$ARCH${NC}"
     
-    # Detect distribution - safely parse /etc/os-release without sourcing
+    # Robust distribution detection using multiple methods
+    # Method 1: Try /etc/os-release with safe parsing
     if [[ -f /etc/os-release ]]; then
-        # Parse /etc/os-release without sourcing to avoid readonly variable conflicts
-        local os_id os_version_id os_version_codename os_pretty_name
-        os_id=$(grep '^ID=' /etc/os-release 2>/dev/null | cut -d'=' -f2 | tr -d '"' || echo "unknown")
-        os_version_id=$(grep '^VERSION_ID=' /etc/os-release 2>/dev/null | cut -d'=' -f2 | tr -d '"' || echo "unknown")
-        os_version_codename=$(grep '^VERSION_CODENAME=' /etc/os-release 2>/dev/null | cut -d'=' -f2 | tr -d '"' || echo "")
-        os_pretty_name=$(grep '^PRETTY_NAME=' /etc/os-release 2>/dev/null | cut -d'=' -f2 | tr -d '"' || echo "$os_id $os_version_id")
-        
-        DISTRO="$os_id"
-        DISTRO_VERSION="$os_version_id"
-        DISTRO_CODENAME="$os_version_codename"
-        DISTRO_NAME="$os_pretty_name"
+        # Use a subshell with unset to avoid any readonly variable conflicts
+        DISTRO=$(unset VERSION; grep '^ID=' /etc/os-release 2>/dev/null | head -1 | cut -d'=' -f2 | sed 's/["'\'']//g' || echo "unknown")
+        DISTRO_VERSION=$(unset VERSION; grep '^VERSION_ID=' /etc/os-release 2>/dev/null | head -1 | cut -d'=' -f2 | sed 's/["'\'']//g' || echo "unknown")
+        DISTRO_CODENAME=$(unset VERSION; grep '^VERSION_CODENAME=' /etc/os-release 2>/dev/null | head -1 | cut -d'=' -f2 | sed 's/["'\'']//g' || echo "")
+        DISTRO_NAME=$(unset VERSION; grep '^PRETTY_NAME=' /etc/os-release 2>/dev/null | head -1 | cut -d'=' -f2 | sed 's/["'\'']//g' || echo "$DISTRO $DISTRO_VERSION")
+    # Method 2: Try /etc/lsb-release
     elif [[ -f /etc/lsb-release ]]; then
-        # Parse /etc/lsb-release safely
-        local lsb_id lsb_release lsb_codename lsb_description
-        lsb_id=$(grep '^DISTRIB_ID=' /etc/lsb-release 2>/dev/null | cut -d'=' -f2 | tr -d '"' || echo "unknown")
-        lsb_release=$(grep '^DISTRIB_RELEASE=' /etc/lsb-release 2>/dev/null | cut -d'=' -f2 | tr -d '"' || echo "unknown")
-        lsb_codename=$(grep '^DISTRIB_CODENAME=' /etc/lsb-release 2>/dev/null | cut -d'=' -f2 | tr -d '"' || echo "")
-        lsb_description=$(grep '^DISTRIB_DESCRIPTION=' /etc/lsb-release 2>/dev/null | cut -d'=' -f2 | tr -d '"' || echo "$lsb_id $lsb_release")
-        
-        DISTRO="$lsb_id"
-        DISTRO_VERSION="$lsb_release"
-        DISTRO_CODENAME="$lsb_codename"
-        DISTRO_NAME="$lsb_description"
+        DISTRO=$(grep '^DISTRIB_ID=' /etc/lsb-release 2>/dev/null | head -1 | cut -d'=' -f2 | sed 's/["'\'']//g' || echo "unknown")
+        DISTRO_VERSION=$(grep '^DISTRIB_RELEASE=' /etc/lsb-release 2>/dev/null | head -1 | cut -d'=' -f2 | sed 's/["'\'']//g' || echo "unknown")
+        DISTRO_CODENAME=$(grep '^DISTRIB_CODENAME=' /etc/lsb-release 2>/dev/null | head -1 | cut -d'=' -f2 | sed 's/["'\'']//g' || echo "")
+        DISTRO_NAME=$(grep '^DISTRIB_DESCRIPTION=' /etc/lsb-release 2>/dev/null | head -1 | cut -d'=' -f2 | sed 's/["'\'']//g' || echo "$DISTRO $DISTRO_VERSION")
+    # Method 3: Try alternative detection methods
+    elif [[ -f /etc/debian_version ]]; then
+        DISTRO="debian"
+        DISTRO_VERSION=$(cat /etc/debian_version 2>/dev/null || echo "unknown")
+        DISTRO_NAME="Debian $DISTRO_VERSION"
+        DISTRO_CODENAME=""
     elif [[ -f /etc/redhat-release ]]; then
         DISTRO="rhel"
         DISTRO_VERSION=$(rpm -E '%{rhel}' 2>/dev/null || echo "unknown")
-        DISTRO_NAME=$(cat /etc/redhat-release)
+        DISTRO_NAME=$(cat /etc/redhat-release 2>/dev/null || echo "Red Hat Enterprise Linux")
+        DISTRO_CODENAME=""
+    # Method 4: Fallback to basic detection
     else
-        error_exit "Unable to detect distribution. This script supports Ubuntu, Debian, CentOS, RHEL, and Fedora."
+        # Last resort: use uname and basic heuristics
+        local uname_info
+        uname_info=$(uname -a 2>/dev/null || echo "unknown")
+        if echo "$uname_info" | grep -qi ubuntu; then
+            DISTRO="ubuntu"
+            DISTRO_VERSION="unknown"
+            DISTRO_NAME="Ubuntu (detected from uname)"
+        elif echo "$uname_info" | grep -qi debian; then
+            DISTRO="debian"
+            DISTRO_VERSION="unknown"
+            DISTRO_NAME="Debian (detected from uname)"
+        else
+            DISTRO="unknown"
+            DISTRO_VERSION="unknown"
+            DISTRO_NAME="Unknown Linux Distribution"
+        fi
+        DISTRO_CODENAME=""
+        warning "Could not reliably detect distribution. Proceeding with best guess: $DISTRO_NAME"
     fi
     
     # Convert distribution ID to lowercase for consistency
