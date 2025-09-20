@@ -369,6 +369,7 @@ parse_arguments() {
                 ;;
             --dry-run)
                 DRY_RUN=true
+                NON_INTERACTIVE=true
                 shift
                 ;;
             --verbose)
@@ -381,8 +382,8 @@ parse_arguments() {
         esac
     done
     
-    # Validate non-interactive mode requirements
-    if [[ "$NON_INTERACTIVE" == "true" ]]; then
+    # Validate non-interactive mode requirements (skip in dry-run)
+    if [[ "$NON_INTERACTIVE" == "true" && "$DRY_RUN" != "true" ]]; then
         if [[ -z "$USERNAME_ARG" ]]; then
             error_exit "Username is required in non-interactive mode. Use -u or --username."
         fi
@@ -778,7 +779,7 @@ get_credentials() {
         # Username with validation
         while true; do
             question "Storage Box username (e.g., u123456 or u123456-sub1): "
-            read -r storage_username
+            read -r storage_username </dev/tty
             
             if [[ -z "$storage_username" ]]; then
                 warning "Username cannot be empty"
@@ -804,7 +805,7 @@ get_credentials() {
         # Password with confirmation
         while true; do
             question "Storage Box password: "
-            read -r -s storage_password
+            read -r -s storage_password </dev/tty
             echo
             
             if [[ -z "$storage_password" ]]; then
@@ -814,7 +815,7 @@ get_credentials() {
             
             if [[ "$SKIP_CONFIRMATION" == "false" ]]; then
                 question "Confirm password: "
-                read -r -s storage_password_confirm
+                read -r -s storage_password_confirm </dev/tty
                 echo
                 
                 if [[ "$storage_password" != "$storage_password_confirm" ]]; then
@@ -898,7 +899,7 @@ get_mount_options() {
             info "Using default mount point: $mount_point"
         else
             question "Mount point path [$default_mount]: "
-            read -r mount_point
+            read -r mount_point </dev/tty
             [[ -z "$mount_point" ]] && mount_point="$default_mount"
             
             if ! validate_mount_point "$mount_point"; then
@@ -917,7 +918,7 @@ get_mount_options() {
             mount_uid="$DEFAULT_UID"
         else
             question "User ID for mounted files [$DEFAULT_UID]: "
-            read -r mount_uid
+            read -r mount_uid </dev/tty
             [[ -z "$mount_uid" ]] && mount_uid="$DEFAULT_UID"
         fi
     fi
@@ -930,7 +931,7 @@ get_mount_options() {
             mount_gid="$DEFAULT_GID"
         else
             question "Group ID for mounted files [$DEFAULT_GID]: "
-            read -r mount_gid
+            read -r mount_gid </dev/tty
             [[ -z "$mount_gid" ]] && mount_gid="$DEFAULT_GID"
         fi
     fi
@@ -940,7 +941,7 @@ get_mount_options() {
     # Performance tuning
     if [[ "$NON_INTERACTIVE" == "false" ]]; then
         question "Enable performance tuning? [Y/n]: "
-        read -r perf_tune
+        read -r perf_tune </dev/tty
         if [[ "$perf_tune" =~ ^[Nn]$ ]]; then
             PERF_TUNING=false
         fi
@@ -1400,6 +1401,14 @@ main() {
     update_packages
     install_packages
     
+    # Skip interactive and mount steps in dry-run
+    if [[ "$DRY_RUN" == "true" ]]; then
+        header "Dry Run Summary"
+        info "[DRY RUN] Would collect credentials, build mount options, create credentials file, create mount point, test mount, and configure persistence"
+        success "Dry run completed"
+        return 0
+    fi
+
     # Configuration
     get_credentials
     get_mount_options

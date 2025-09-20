@@ -8,7 +8,7 @@
 [![ARM64](https://img.shields.io/badge/ARM64-✅-success?style=flat-square)](https://github.com/Automations-Project/Hetzner-Shells)
 [![x86_64](https://img.shields.io/badge/x86__64-✅-success?style=flat-square)](https://github.com/Automations-Project/Hetzner-Shells)
 [![Production Ready](https://img.shields.io/badge/Production-Ready-brightgreen?style=flat-square)](https://github.com/Automations-Project/Hetzner-Shells)
-
+![alt text](/Storage/image.png)
 > **One-command solution** to automatically mount Hetzner Storage Box on Linux systems with **zero manual configuration**. Now supports multiple distributions, non-interactive mode, and enhanced security.
 
 ## 🚀 Quick Start
