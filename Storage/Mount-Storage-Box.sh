@@ -4,7 +4,7 @@
 # Hetzner Storage Box Auto-Mount Script
 # Production Version with Advanced Features
 # Version: 1.0.0
-# Author: Hetzner Community Edition
+# Author: Nskha Automation Projects - Hetzner Community Edition
 # License: MIT
 #
 # Description:
@@ -451,24 +451,34 @@ detect_system() {
     ARCH=$(uname -m)
     echo -e "  Architecture: ${WHITE}$ARCH${NC}"
     
-    # Detect distribution
+    # Detect distribution - safely parse /etc/os-release without sourcing
     if [[ -f /etc/os-release ]]; then
-        # shellcheck source=/dev/null
-        source /etc/os-release
-        DISTRO="${ID:-unknown}"
-        DISTRO_VERSION="${VERSION_ID:-unknown}"
-        DISTRO_CODENAME="${VERSION_CODENAME:-}"
-        DISTRO_NAME="${PRETTY_NAME:-$ID $VERSION_ID}"
+        # Parse /etc/os-release without sourcing to avoid readonly variable conflicts
+        local os_id os_version_id os_version_codename os_pretty_name
+        os_id=$(grep '^ID=' /etc/os-release 2>/dev/null | cut -d'=' -f2 | tr -d '"' || echo "unknown")
+        os_version_id=$(grep '^VERSION_ID=' /etc/os-release 2>/dev/null | cut -d'=' -f2 | tr -d '"' || echo "unknown")
+        os_version_codename=$(grep '^VERSION_CODENAME=' /etc/os-release 2>/dev/null | cut -d'=' -f2 | tr -d '"' || echo "")
+        os_pretty_name=$(grep '^PRETTY_NAME=' /etc/os-release 2>/dev/null | cut -d'=' -f2 | tr -d '"' || echo "$os_id $os_version_id")
+        
+        DISTRO="$os_id"
+        DISTRO_VERSION="$os_version_id"
+        DISTRO_CODENAME="$os_version_codename"
+        DISTRO_NAME="$os_pretty_name"
     elif [[ -f /etc/lsb-release ]]; then
-        # shellcheck source=/dev/null
-        source /etc/lsb-release
-        DISTRO="${DISTRIB_ID:-unknown}"
-        DISTRO_VERSION="${DISTRIB_RELEASE:-unknown}"
-        DISTRO_CODENAME="${DISTRIB_CODENAME:-}"
-        DISTRO_NAME="${DISTRIB_DESCRIPTION:-$DISTRO $DISTRO_VERSION}"
+        # Parse /etc/lsb-release safely
+        local lsb_id lsb_release lsb_codename lsb_description
+        lsb_id=$(grep '^DISTRIB_ID=' /etc/lsb-release 2>/dev/null | cut -d'=' -f2 | tr -d '"' || echo "unknown")
+        lsb_release=$(grep '^DISTRIB_RELEASE=' /etc/lsb-release 2>/dev/null | cut -d'=' -f2 | tr -d '"' || echo "unknown")
+        lsb_codename=$(grep '^DISTRIB_CODENAME=' /etc/lsb-release 2>/dev/null | cut -d'=' -f2 | tr -d '"' || echo "")
+        lsb_description=$(grep '^DISTRIB_DESCRIPTION=' /etc/lsb-release 2>/dev/null | cut -d'=' -f2 | tr -d '"' || echo "$lsb_id $lsb_release")
+        
+        DISTRO="$lsb_id"
+        DISTRO_VERSION="$lsb_release"
+        DISTRO_CODENAME="$lsb_codename"
+        DISTRO_NAME="$lsb_description"
     elif [[ -f /etc/redhat-release ]]; then
         DISTRO="rhel"
-        DISTRO_VERSION=$(rpm -E '%{rhel}')
+        DISTRO_VERSION=$(rpm -E '%{rhel}' 2>/dev/null || echo "unknown")
         DISTRO_NAME=$(cat /etc/redhat-release)
     else
         error_exit "Unable to detect distribution. This script supports Ubuntu, Debian, CentOS, RHEL, and Fedora."
