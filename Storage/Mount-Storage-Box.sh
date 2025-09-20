@@ -1,12 +1,34 @@
 #!/bin/bash
 
+################################################################################
 # Hetzner Storage Box Auto-Mount Script
-# Enhanced Production Version with Advanced Features
-# Version: 0.0.7
-# Author: Auto-generated for Hetzner Storage Box mounting
+# Production Version with Advanced Features
+# Version: 1.0.0
+# Author: Hetzner Community Edition
+# License: MIT
+#
+# Description:
+#   Automates the mounting of Hetzner Storage Boxes on Linux systems.
+#   Supports multiple distributions, SMB protocol negotiation, and
+#   both interactive and non-interactive modes.
+#
+# Usage:
+#   Interactive mode: ./Mount-Storage-Box.sh
+#   Non-interactive: ./Mount-Storage-Box.sh --non-interactive [OPTIONS]
+#   Help: ./Mount-Storage-Box.sh --help
+################################################################################
 
-set -eE
-trap 'handle_error $? $LINENO' ERR
+# Enable strict error handling
+# -e: Exit on error
+# -E: ERR trap is inherited by shell functions
+# -u: Treat unset variables as errors
+# -o pipefail: Pipe command fails if any command in the pipe fails
+set -eEuo pipefail
+
+# Set up error handling and signal traps
+trap 'handle_error $? $LINENO "$BASH_COMMAND"' ERR
+trap 'handle_signal INT' INT
+trap 'handle_signal TERM' TERM
 
 # Colors and styling - Safer fallback
 if [[ "${TERM:-}" != "dumb" ]] && [[ -t 1 ]] && command -v tput >/dev/null 2>&1; then
@@ -29,32 +51,69 @@ else
     RED='' GREEN='' YELLOW='' BLUE='' MAGENTA='' CYAN='' WHITE='' GRAY='' BOLD='' NC=''
 fi
 
-# Configuration variables
-VERSION="0.0.7"
-CREDENTIALS_FILE="/etc/cifs-credentials.txt"
-DEFAULT_MOUNT_POINT="/mnt/hetzner-storage"
-BACKUP_SUFFIX=".backup-$(date +%Y%m%d-%H%M%S)"
-MAX_RETRIES=3
-RETRY_DELAY=5
-SMB_VERSIONS=("3.1.1" "3.0" "2.1" "2.0" "1.0")
-DEFAULT_UID=$(id -u)
-DEFAULT_GID=$(id -g)
+################################################################################
+# Global Configuration Variables
+################################################################################
 
-# Logging
-LOG_DIR="/var/log/hetzner-mount"
+# Script version
+readonly VERSION="1.0.0"
+# File paths and defaults
+readonly CREDENTIALS_FILE="/etc/cifs-credentials.txt"
+readonly DEFAULT_MOUNT_POINT="/mnt/hetzner-storage"
+BACKUP_SUFFIX=".backup-$(date +%Y%m%d-%H%M%S)"
+readonly BACKUP_SUFFIX
+readonly MAX_RETRIES=3
+readonly RETRY_DELAY=5
+readonly SMB_VERSIONS=("3.1.1" "3.0" "2.1" "2.0" "1.0")
+DEFAULT_UID=$(id -u)
+readonly DEFAULT_UID
+DEFAULT_GID=$(id -g)
+readonly DEFAULT_GID
+
+# Non-interactive mode variables (can be set via command line)
+NON_INTERACTIVE=false
+USERNAME_ARG=""
+PASSWORD_ARG=""
+PASSWORD_FILE=""
+MOUNT_POINT_ARG=""
+UID_ARG=""
+GID_ARG=""
+PERF_TUNING=true
+MOUNT_METHOD="systemd"  # systemd, fstab, or none
+SKIP_CONFIRMATION=false
+VERBOSE=false
+DRY_RUN=false
+
+# Logging configuration
+readonly LOG_DIR="/var/log/hetzner-mount"
 mkdir -p "$LOG_DIR" 2>/dev/null || true
 LOG_FILE="$LOG_DIR/mount-$(date +%Y%m%d-%H%M%S).log"
+readonly LOG_FILE
 
-# Spinner chars
-SPINNER_CHARS="⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+# UI elements
+readonly SPINNER_CHARS="⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
-# Functions
+# Distribution detection variables
+DISTRO=""
+DISTRO_VERSION=""
+PACKAGE_MANAGER=""
+SERVICE_MANAGER=""
+
+################################################################################
+# Utility Functions
+################################################################################
+
+# Log a message to both console and log file
+# Arguments:
+#   $1 - Message to log
+# Strips ANSI escape sequences from log file output while preserving colors
+# in terminal output
 log() {
-    # Strip both real ESC sequences and literal \033 sequences before writing to log
-    # Real ESC bytes: \x1b[[...letter]
-    # Literal text:  \033[[...letter]
-    local msg="$1"
+    local msg="${1:-}"
     local clean_msg
+    
+    # Remove ANSI escape sequences for log file
+    # This handles both actual ESC bytes (\x1b) and literal \033 strings
     clean_msg=$(printf '%s' "$msg" \
         | sed -E 's/\x1b\[[0-9;]*[A-Za-z]//g' \
         | sed -E 's/\\033\[[0-9;]*[A-Za-z]//g')
@@ -63,19 +122,46 @@ log() {
     echo -e "$msg"
 }
 
+# Enhanced error handler with command context
+# Arguments:
+#   $1 - Exit code
+#   $2 - Line number
+#   $3 - Command that failed
 handle_error() {
     local exit_code=$1
     local line_no=$2
-    log "${RED}✗ ERROR: Command failed with exit code $exit_code at line $line_no${NC}"
-    log "${RED}Check log file for details: $LOG_FILE${NC}"
+    local cmd="${3:-Unknown command}"
+    
+    log "${RED}✗ ERROR: Command failed at line $line_no${NC}"
+    log "${RED}  Exit code: $exit_code${NC}"
+    log "${RED}  Command: $cmd${NC}"
+    log "${RED}  Log file: $LOG_FILE${NC}"
+    
     cleanup_on_error
     exit "$exit_code"
 }
 
-error_exit() {
-    log "${RED}✗ ERROR: $1${NC}"
+# Signal handler for graceful shutdown
+# Arguments:
+#   $1 - Signal name (INT, TERM, etc.)
+handle_signal() {
+    local signal="$1"
+    log "${YELLOW}⚠ Received signal: $signal${NC}"
+    log "${YELLOW}  Cleaning up and exiting...${NC}"
     cleanup_on_error
-    exit 1
+    exit 130  # Standard exit code for terminated by signal
+}
+
+# Exit with error message
+# Arguments:
+#   $1 - Error message
+#   $2 - Exit code (optional, default: 1)
+error_exit() {
+    local message="${1:-Unknown error}"
+    local exit_code="${2:-1}"
+    log "${RED}✗ ERROR: $message${NC}"
+    cleanup_on_error
+    exit "$exit_code"
 }
 
 success() {
@@ -90,44 +176,66 @@ info() {
     log "${CYAN}ℹ INFO: $1${NC}"
 }
 
+# Display a question to the user
+# Arguments:
+#   $1 - Question text
 question() {
-    echo -e "${PURPLE}❓ $1${NC}"
+    echo -e "${MAGENTA}❓ $1${NC}"
 }
 
+# Display a formatted header section
+# Arguments:
+#   $1 - Header text
 header() {
     local width=60
     local text="$1"
-    local padding=$(( (width - ${#text} - 2) / 2 ))
+    local text_len=${#text}
+    local padding=$(( (width - text_len - 2) / 2 ))
+    local right_padding=$(( width - padding - text_len ))
+    
     echo
     echo -e "${BLUE}${BOLD}╔$(printf '═%.0s' {1..60})╗${NC}"
-    echo -e "${BLUE}${BOLD}║$(printf ' %.0s' $(seq 1 $padding))$text$(printf ' %.0s' $(seq 1 $((width - padding - ${#text}))))║${NC}"
+    echo -e "${BLUE}${BOLD}║$(printf ' %.0s' $(seq 1 $padding))$text$(printf ' %.0s' $(seq 1 $right_padding))║${NC}"
     echo -e "${BLUE}${BOLD}╚$(printf '═%.0s' {1..60})╝${NC}"
     echo
 }
 
+# Display a subheader for sections
+# Arguments:
+#   $1 - Subheader text
 subheader() {
     echo -e "${CYAN}${BOLD}▶ $1${NC}"
     echo -e "${GRAY}$(printf '─%.0s' {1..40})${NC}"
 }
 
+# Display a spinner while a background process runs
+# Arguments:
+#   $1 - Process ID to monitor
+#   $2 - Message to display
 spinner() {
     local pid=$1
     local message=$2
     local i=0
+    local tput_available=false
     
-    # Colorless spinner to avoid escape sequences in consoles/log captures
+    # Check tput availability once
+    if [[ -t 1 ]] && command -v tput >/dev/null 2>&1 && tput el >/dev/null 2>&1; then
+        tput_available=true
+    fi
+    
+    # Display spinner while process is running
     while kill -0 "$pid" 2>/dev/null; do
-        if [[ -t 1 ]] && command -v tput >/dev/null 2>&1; then
+        if [[ "$tput_available" == true ]]; then
             printf "\r%s %s..." "${SPINNER_CHARS:i++%${#SPINNER_CHARS}:1}" "$message"
-            # Clear to end of line to avoid leftovers
-            tput el
+            tput el  # Clear to end of line
         else
             printf "\r%s..." "$message"
         fi
         sleep 0.1
     done
-    # Fully clear the line after the spinner finishes
-    if command -v tput >/dev/null 2>&1; then
+    
+    # Clear the spinner line
+    if [[ "$tput_available" == true ]]; then
         printf "\r"
         tput el
     else
@@ -135,8 +243,54 @@ spinner() {
     fi
 }
 
+################################################################################
+# Help and Usage Functions
+################################################################################
+
+# Display usage information
+show_usage() {
+    cat << EOF
+Usage: $(basename "$0") [OPTIONS]
+
+Automatically mount Hetzner Storage Box on Linux systems.
+
+OPTIONS:
+    -h, --help              Show this help message
+    -v, --version           Show script version
+    -n, --non-interactive   Run in non-interactive mode
+    -u, --username USER     Storage Box username (e.g., u123456)
+    -p, --password PASS     Storage Box password (NOT recommended)
+    -f, --password-file FILE Read password from file
+    -m, --mount-point PATH  Custom mount point (default: $DEFAULT_MOUNT_POINT)
+    --uid UID               User ID for mounted files
+    --gid GID               Group ID for mounted files
+    --no-tuning             Disable performance tuning
+    --mount-method METHOD   Mount method: systemd, fstab, none
+    --skip-confirmation     Skip confirmation prompts
+    --dry-run               Show what would be done without making changes
+    --verbose               Enable verbose output
+
+EXAMPLES:
+    # Interactive mode (recommended)
+    $(basename "$0")
+    
+    # Non-interactive with password file
+    $(basename "$0") -n -u u123456 -f /secure/pass.txt
+    
+    # Custom mount point
+    $(basename "$0") -n -u u123456 -f /secure/pass.txt -m /data/storage
+
+For more information, visit:
+https://docs.hetzner.com/robot/storage-box
+
+EOF
+}
+
+# Display welcome banner
 show_welcome() {
-    clear
+    if [[ "$NON_INTERACTIVE" == "false" ]]; then
+        clear
+    fi
     echo -e "${BLUE}${BOLD}"
     cat << "EOF"
     __  __     __                     
@@ -148,11 +302,102 @@ show_welcome() {
     Storage Box Auto-Mount Assistant
 EOF
     echo -e "${NC}"
-    echo -e "${CYAN}Version $VERSION - Production Ready${NC}"
+    echo -e "${CYAN}Version $VERSION - Production${NC}"
     echo -e "${GRAY}────────────────────────────────────────${NC}"
     echo
-    sleep 1
+    if [[ "$NON_INTERACTIVE" == "false" ]]; then
+        sleep 1
+    fi
 }
+
+################################################################################
+# Command-line Argument Parsing
+################################################################################
+
+# Parse command-line arguments
+parse_arguments() {
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                show_usage
+                exit 0
+                ;;
+            -v|--version)
+                echo "Mount-Storage-Box.sh version $VERSION"
+                exit 0
+                ;;
+            -n|--non-interactive)
+                NON_INTERACTIVE=true
+                shift
+                ;;
+            -u|--username)
+                USERNAME_ARG="$2"
+                shift 2
+                ;;
+            -p|--password)
+                PASSWORD_ARG="$2"
+                warning "Using password on command line is insecure!"
+                shift 2
+                ;;
+            -f|--password-file)
+                PASSWORD_FILE="$2"
+                shift 2
+                ;;
+            -m|--mount-point)
+                MOUNT_POINT_ARG="$2"
+                shift 2
+                ;;
+            --uid)
+                UID_ARG="$2"
+                shift 2
+                ;;
+            --gid)
+                GID_ARG="$2"
+                shift 2
+                ;;
+            --no-tuning)
+                PERF_TUNING=false
+                shift
+                ;;
+            --mount-method)
+                MOUNT_METHOD="$2"
+                shift 2
+                ;;
+            --skip-confirmation)
+                SKIP_CONFIRMATION=true
+                shift
+                ;;
+            --dry-run)
+                DRY_RUN=true
+                shift
+                ;;
+            --verbose)
+                VERBOSE=true
+                shift
+                ;;
+            *)
+                error_exit "Unknown option: $1\nUse --help for usage information."
+                ;;
+        esac
+    done
+    
+    # Validate non-interactive mode requirements
+    if [[ "$NON_INTERACTIVE" == "true" ]]; then
+        if [[ -z "$USERNAME_ARG" ]]; then
+            error_exit "Username is required in non-interactive mode. Use -u or --username."
+        fi
+        if [[ -z "$PASSWORD_ARG" && -z "$PASSWORD_FILE" ]]; then
+            error_exit "Password is required in non-interactive mode. Use -f or --password-file."
+        fi
+        if [[ -n "$PASSWORD_FILE" && ! -f "$PASSWORD_FILE" ]]; then
+            error_exit "Password file not found: $PASSWORD_FILE"
+        fi
+    fi
+}
+
+################################################################################
+# Network and System Detection Functions
+################################################################################
 
 # Check network connectivity
 check_network() {
@@ -198,7 +443,7 @@ check_dns() {
     fi
 }
 
-# Detect system information
+# Enhanced system detection supporting multiple distributions
 detect_system() {
     subheader "System Detection"
     
@@ -206,33 +451,86 @@ detect_system() {
     ARCH=$(uname -m)
     echo -e "  Architecture: ${WHITE}$ARCH${NC}"
     
-    # Ubuntu version
-    if [[ -f /etc/lsb-release ]]; then
+    # Detect distribution
+    if [[ -f /etc/os-release ]]; then
+        # shellcheck source=/dev/null
+        source /etc/os-release
+        DISTRO="${ID:-unknown}"
+        DISTRO_VERSION="${VERSION_ID:-unknown}"
+        DISTRO_CODENAME="${VERSION_CODENAME:-}"
+        DISTRO_NAME="${PRETTY_NAME:-$ID $VERSION_ID}"
+    elif [[ -f /etc/lsb-release ]]; then
+        # shellcheck source=/dev/null
         source /etc/lsb-release
-        UBUNTU_VERSION="$DISTRIB_RELEASE"
-        UBUNTU_CODENAME="$DISTRIB_CODENAME"
-        echo -e "  Ubuntu: ${WHITE}$UBUNTU_VERSION ($UBUNTU_CODENAME)${NC}"
+        DISTRO="${DISTRIB_ID:-unknown}"
+        DISTRO_VERSION="${DISTRIB_RELEASE:-unknown}"
+        DISTRO_CODENAME="${DISTRIB_CODENAME:-}"
+        DISTRO_NAME="${DISTRIB_DESCRIPTION:-$DISTRO $DISTRO_VERSION}"
+    elif [[ -f /etc/redhat-release ]]; then
+        DISTRO="rhel"
+        DISTRO_VERSION=$(rpm -E '%{rhel}')
+        DISTRO_NAME=$(cat /etc/redhat-release)
     else
-        error_exit "This script requires Ubuntu. Please run on Ubuntu system."
+        error_exit "Unable to detect distribution. This script supports Ubuntu, Debian, CentOS, RHEL, and Fedora."
     fi
+    
+    # Convert distribution ID to lowercase for consistency
+    DISTRO=$(echo "$DISTRO" | tr '[:upper:]' '[:lower:]')
+    
+    echo -e "  Distribution: ${WHITE}$DISTRO_NAME${NC}"
+    
+    # Detect package manager and service manager
+    if command -v apt-get >/dev/null 2>&1; then
+        PACKAGE_MANAGER="apt"
+    elif command -v yum >/dev/null 2>&1; then
+        PACKAGE_MANAGER="yum"
+    elif command -v dnf >/dev/null 2>&1; then
+        PACKAGE_MANAGER="dnf"
+    elif command -v zypper >/dev/null 2>&1; then
+        PACKAGE_MANAGER="zypper"
+    else
+        error_exit "No supported package manager found (apt, yum, dnf, zypper)."
+    fi
+    
+    # Detect service manager
+    if command -v systemctl >/dev/null 2>&1; then
+        SERVICE_MANAGER="systemd"
+    elif command -v service >/dev/null 2>&1; then
+        SERVICE_MANAGER="sysvinit"
+    else
+        SERVICE_MANAGER="unknown"
+    fi
+    
+    echo -e "  Package Manager: ${WHITE}$PACKAGE_MANAGER${NC}"
+    echo -e "  Service Manager: ${WHITE}$SERVICE_MANAGER${NC}"
     
     # Kernel version
     KERNEL=$(uname -r)
     echo -e "  Kernel: ${WHITE}$KERNEL${NC}"
     
     # Available memory
-    MEM_TOTAL=$(free -h | awk '/^Mem:/ {print $2}')
+    MEM_TOTAL=$(free -h 2>/dev/null | awk '/^Mem:/ {print $2}' || echo "unknown")
     echo -e "  Memory: ${WHITE}$MEM_TOTAL${NC}"
     
     # Check if ARM64
     if [[ "$ARCH" == "aarch64" || "$ARCH" == "arm64" ]]; then
         IS_ARM64=true
-        echo -e "  ${YELLOW}Note: ARM64 detected - will use ports.ubuntu.com${NC}"
+        if [[ "$DISTRO" == "ubuntu" ]]; then
+            echo -e "  ${YELLOW}Note: ARM64 detected - will use ports.ubuntu.com${NC}"
+        fi
     else
         IS_ARM64=false
     fi
     
-    sleep 1
+    # Set Ubuntu-specific variables for compatibility
+    if [[ "$DISTRO" == "ubuntu" ]]; then
+        UBUNTU_VERSION="$DISTRO_VERSION"
+        UBUNTU_CODENAME="$DISTRO_CODENAME"
+    fi
+    
+    if [[ "$NON_INTERACTIVE" == "false" ]]; then
+        sleep 1
+    fi
 }
 
 # Check if running as root
@@ -242,71 +540,147 @@ check_root() {
     fi
 }
 
-# Fix repositories for ARM64
+# Fix repositories for ARM64 (Ubuntu-specific)
 fix_arm64_repositories() {
-    if [[ "$IS_ARM64" != true ]]; then
+    # Only applicable for Ubuntu on ARM64
+    if [[ "$IS_ARM64" != true || "$DISTRO" != "ubuntu" ]]; then
         return 0
     fi
     
     header "ARM64 Repository Configuration"
     
-    if grep -q "ports.ubuntu.com" /etc/apt/sources.list; then
+    if grep -q "ports.ubuntu.com" /etc/apt/sources.list 2>/dev/null; then
         success "ARM64 repositories already configured correctly"
         return 0
     fi
     
-    warning "ARM64 system with incorrect repository configuration detected"
-    question "Fix repository configuration? (recommended) [Y/n]: "
-    read -r fix_repos
+    warning "ARM64 Ubuntu system with incorrect repository configuration detected"
     
-    if [[ ! "$fix_repos" =~ ^[Nn]$ ]]; then
-        info "Backing up sources.list..."
-        cp /etc/apt/sources.list "/etc/apt/sources.list$BACKUP_SUFFIX"
+    if [[ "$NON_INTERACTIVE" == "false" ]]; then
+        question "Fix repository configuration? (recommended) [Y/n]: "
+        read -r fix_repos
         
-        info "Creating ARM64-compatible sources.list..."
-        cat > /etc/apt/sources.list << EOF
-# ARM64 Ubuntu repositories
-deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ $UBUNTU_CODENAME main restricted universe multiverse
-deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ $UBUNTU_CODENAME-updates main restricted universe multiverse
-deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ $UBUNTU_CODENAME-backports main restricted universe multiverse
-deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ $UBUNTU_CODENAME-security main restricted universe multiverse
-EOF
-        
-        success "ARM64 repositories configured"
+        if [[ "$fix_repos" =~ ^[Nn]$ ]]; then
+            return 0
+        fi
     fi
+    
+    if [[ "$DRY_RUN" == "true" ]]; then
+        info "[DRY RUN] Would backup and update /etc/apt/sources.list for ARM64"
+        return 0
+    fi
+    
+    info "Backing up sources.list..."
+    cp /etc/apt/sources.list "/etc/apt/sources.list$BACKUP_SUFFIX"
+    
+    info "Creating ARM64-compatible sources.list..."
+    cat > /etc/apt/sources.list << EOF
+# ARM64 Ubuntu repositories
+deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ ${UBUNTU_CODENAME:-focal} main restricted universe multiverse
+deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ ${UBUNTU_CODENAME:-focal}-updates main restricted universe multiverse
+deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ ${UBUNTU_CODENAME:-focal}-backports main restricted universe multiverse
+deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ ${UBUNTU_CODENAME:-focal}-security main restricted universe multiverse
+EOF
+    
+    success "ARM64 repositories configured"
 }
 
-# Update package lists
+# Update package lists based on distribution
 update_packages() {
     subheader "Package Repository Update"
     
-    (apt update > /dev/null 2>&1) &
+    if [[ "$DRY_RUN" == "true" ]]; then
+        info "[DRY RUN] Would update package lists using $PACKAGE_MANAGER"
+        return 0
+    fi
+    
+    local update_cmd
+    case "$PACKAGE_MANAGER" in
+        apt)
+            update_cmd="apt-get update"
+            ;;
+        yum)
+            update_cmd="yum makecache"
+            ;;
+        dnf)
+            update_cmd="dnf makecache"
+            ;;
+        zypper)
+            update_cmd="zypper refresh"
+            ;;
+        *)
+            error_exit "Unsupported package manager: $PACKAGE_MANAGER"
+            ;;
+    esac
+    
+    if [[ "$VERBOSE" == "true" ]]; then
+        info "Running: $update_cmd"
+    fi
+    
+    ($update_cmd > /dev/null 2>&1) &
     spinner $! "Updating package lists"
     
     if wait $!; then
         success "Package lists updated"
     else
-        error_exit "Failed to update package lists"
+        warning "Failed to update package lists (non-critical)"
     fi
 }
 
-# Install required packages
+# Install required packages based on distribution
 install_packages() {
     header "Installing Required Packages"
     
-    local packages=("cifs-utils" "keyutils")
-    
-    # Add kernel modules for older versions
-    if dpkg --compare-versions "$UBUNTU_VERSION" lt "22.04"; then
-        packages+=("linux-modules-extra-$(uname -r)")
+    if [[ "$DRY_RUN" == "true" ]]; then
+        info "[DRY RUN] Would install: cifs-utils keyutils"
+        return 0
     fi
     
+    local packages
+    local install_cmd
+    local check_cmd
+    
+    # Set package names and commands based on distribution
+    case "$PACKAGE_MANAGER" in
+        apt)
+            packages=("cifs-utils" "keyutils")
+            install_cmd="apt-get install -y"
+            check_cmd="dpkg -l | grep -q '^ii'"
+            
+            # Add kernel modules for older Ubuntu versions
+            if [[ "$DISTRO" == "ubuntu" ]] && [[ -n "${UBUNTU_VERSION:-}" ]]; then
+                if dpkg --compare-versions "$UBUNTU_VERSION" lt "22.04" 2>/dev/null; then
+                    packages+=("linux-modules-extra-$(uname -r)")
+                fi
+            fi
+            ;;
+        yum|dnf)
+            packages=("cifs-utils" "keyutils")
+            install_cmd="$PACKAGE_MANAGER install -y"
+            check_cmd="rpm -q"
+            ;;
+        zypper)
+            packages=("cifs-utils" "keyutils")
+            install_cmd="zypper install -y"
+            check_cmd="rpm -q"
+            ;;
+        *)
+            error_exit "Unsupported package manager: $PACKAGE_MANAGER"
+            ;;
+    esac
+    
+    # Install each package
     for package in "${packages[@]}"; do
-        if dpkg -l | grep -q "^ii  $package "; then
+        # Check if package is already installed
+        if $check_cmd "$package" &>/dev/null; then
             success "$package already installed"
         else
             echo -n "  Installing $package... "
-            if apt install -y "$package" &>/dev/null; then
+            if [[ "$VERBOSE" == "true" ]]; then
+                info "Running: $install_cmd $package"
+            fi
+            
+            if $install_cmd "$package" &>/dev/null; then
                 echo -e "${GREEN}✓${NC}"
             else
                 echo -e "${RED}✗${NC}"
@@ -341,30 +715,19 @@ validate_username() {
     fi
 }
 
-# Get Storage Box credentials
+# Get Storage Box credentials (interactive or from arguments)
 get_credentials() {
     header "Storage Box Configuration"
     
-    echo -e "${CYAN}Please provide your Hetzner Storage Box details${NC}"
-    echo -e "${GRAY}Need help? Check: https://docs.hetzner.com/robot/storage-box${NC}"
-    echo
-    
-    # Username with validation
-    while true; do
-        question "Storage Box username (e.g., u123456 or u123456-sub1): "
-        read -r storage_username
+    # Use command-line arguments if provided
+    if [[ -n "$USERNAME_ARG" ]]; then
+        storage_username="$USERNAME_ARG"
+        info "Using username from command line: $storage_username"
         
-        if [[ -z "$storage_username" ]]; then
-            warning "Username cannot be empty"
-            continue
-        fi
-        
+        # Validate username
         user_type=$(validate_username "$storage_username")
         if [[ "$user_type" == "invalid" ]]; then
-            warning "Invalid username format. Expected: u123456 or u123456-sub1"
-            echo -e "${GRAY}  Main user: u followed by numbers${NC}"
-            echo -e "${GRAY}  Sub-user: u followed by numbers, then -sub and number${NC}"
-            continue
+            error_exit "Invalid username format: $storage_username\nExpected: u123456 or u123456-sub1"
         fi
         
         if [[ "$user_type" == "main" ]]; then
@@ -372,40 +735,83 @@ get_credentials() {
         else
             info "✓ Sub-user account detected"
         fi
-        break
-    done
-    
-    # Password with confirmation
-    while true; do
-        question "Storage Box password: "
-        read -r -s storage_password
+        
+        # Get password from file or argument
+        if [[ -n "$PASSWORD_FILE" ]]; then
+            storage_password=$(cat "$PASSWORD_FILE" 2>/dev/null) || error_exit "Cannot read password file: $PASSWORD_FILE"
+            info "Password loaded from file"
+        elif [[ -n "$PASSWORD_ARG" ]]; then
+            storage_password="$PASSWORD_ARG"
+            info "Using password from command line"
+        else
+            error_exit "Password required in non-interactive mode"
+        fi
+    else
+        # Interactive mode
+        echo -e "${CYAN}Please provide your Hetzner Storage Box details${NC}"
+        echo -e "${GRAY}Need help? Check: https://docs.hetzner.com/robot/storage-box${NC}"
         echo
         
-        if [[ -z "$storage_password" ]]; then
-            warning "Password cannot be empty"
-            continue
-        fi
+        # Username with validation
+        while true; do
+            question "Storage Box username (e.g., u123456 or u123456-sub1): "
+            read -r storage_username
+            
+            if [[ -z "$storage_username" ]]; then
+                warning "Username cannot be empty"
+                continue
+            fi
+            
+            user_type=$(validate_username "$storage_username")
+            if [[ "$user_type" == "invalid" ]]; then
+                warning "Invalid username format. Expected: u123456 or u123456-sub1"
+                echo -e "${GRAY}  Main user: u followed by numbers${NC}"
+                echo -e "${GRAY}  Sub-user: u followed by numbers, then -sub and number${NC}"
+                continue
+            fi
+            
+            if [[ "$user_type" == "main" ]]; then
+                info "✓ Main user account detected"
+            else
+                info "✓ Sub-user account detected"
+            fi
+            break
+        done
         
-        question "Confirm password: "
-        read -r -s storage_password_confirm
-        echo
-        
-        if [[ "$storage_password" != "$storage_password_confirm" ]]; then
-            warning "Passwords do not match. Please try again."
-            continue
-        fi
-        
-        success "Password confirmed"
-        break
-    done
+        # Password with confirmation
+        while true; do
+            question "Storage Box password: "
+            read -r -s storage_password
+            echo
+            
+            if [[ -z "$storage_password" ]]; then
+                warning "Password cannot be empty"
+                continue
+            fi
+            
+            if [[ "$SKIP_CONFIRMATION" == "false" ]]; then
+                question "Confirm password: "
+                read -r -s storage_password_confirm
+                echo
+                
+                if [[ "$storage_password" != "$storage_password_confirm" ]]; then
+                    warning "Passwords do not match. Please try again."
+                    continue
+                fi
+            fi
+            
+            success "Password confirmed"
+            break
+        done
+    fi
     
     # Auto-generate hostname and path
     if [[ "$user_type" == "sub" ]]; then
-        storage_hostname="$storage_username.your-storagebox.de"  # Sub-users use full sub-user as hostname
-        storage_path="$storage_username"  # Sub-users access their own folder
+        storage_hostname="$storage_username.your-storagebox.de"
+        storage_path="$storage_username"
         default_mount="${DEFAULT_MOUNT_POINT}-${storage_username##*-}"
     else
-        storage_hostname="${storage_username}.your-storagebox.de"  # Main users use username as hostname
+        storage_hostname="${storage_username}.your-storagebox.de"
         storage_path="backup"
         default_mount="$DEFAULT_MOUNT_POINT"
     fi
@@ -422,30 +828,100 @@ get_credentials() {
     check_dns "$storage_hostname"
 }
 
-# Get mount options
+# Validate and sanitize mount point path
+# Arguments:
+#   $1 - Mount point path
+# Returns:
+#   0 if valid, 1 if invalid
+validate_mount_point() {
+    local path="$1"
+    
+    # Check for invalid characters
+    if [[ "$path" =~ [\<\>\|\:] ]]; then
+        return 1
+    fi
+    
+    # Ensure absolute path
+    if [[ "$path" != /* ]]; then
+        return 1
+    fi
+    
+    # Check for dangerous paths
+    local dangerous_paths=("/" "/bin" "/boot" "/dev" "/etc" "/lib" "/proc" "/root" "/sbin" "/sys" "/usr")
+    for dangerous in "${dangerous_paths[@]}"; do
+        if [[ "$path" == "$dangerous" ]]; then
+            return 1
+        fi
+    done
+    
+    return 0
+}
+
+# Get mount options (interactive or from arguments)
 get_mount_options() {
     subheader "Mount Options"
     
     # Mount point
-    question "Mount point path [$default_mount]: "
-    read -r mount_point
-    [[ -z "$mount_point" ]] && mount_point="$default_mount"
+    if [[ -n "$MOUNT_POINT_ARG" ]]; then
+        mount_point="$MOUNT_POINT_ARG"
+        info "Using mount point from command line: $mount_point"
+        
+        if ! validate_mount_point "$mount_point"; then
+            error_exit "Invalid mount point: $mount_point\nMount point must be an absolute path and not a system directory."
+        fi
+    else
+        if [[ "$NON_INTERACTIVE" == "true" ]]; then
+            mount_point="$default_mount"
+            info "Using default mount point: $mount_point"
+        else
+            question "Mount point path [$default_mount]: "
+            read -r mount_point
+            [[ -z "$mount_point" ]] && mount_point="$default_mount"
+            
+            if ! validate_mount_point "$mount_point"; then
+                error_exit "Invalid mount point: $mount_point\nMount point must be an absolute path and not a system directory."
+            fi
+        fi
+    fi
     echo -e "  ${BOLD}Mount point:${NC} $mount_point"
     
     # UID/GID
-    question "User ID for mounted files [$DEFAULT_UID]: "
-    read -r mount_uid
-    [[ -z "$mount_uid" ]] && mount_uid="$DEFAULT_UID"
+    if [[ -n "$UID_ARG" ]]; then
+        mount_uid="$UID_ARG"
+        info "Using UID from command line: $mount_uid"
+    else
+        if [[ "$NON_INTERACTIVE" == "true" ]]; then
+            mount_uid="$DEFAULT_UID"
+        else
+            question "User ID for mounted files [$DEFAULT_UID]: "
+            read -r mount_uid
+            [[ -z "$mount_uid" ]] && mount_uid="$DEFAULT_UID"
+        fi
+    fi
     
-    question "Group ID for mounted files [$DEFAULT_GID]: "
-    read -r mount_gid
-    [[ -z "$mount_gid" ]] && mount_gid="$DEFAULT_GID"
+    if [[ -n "$GID_ARG" ]]; then
+        mount_gid="$GID_ARG"
+        info "Using GID from command line: $mount_gid"
+    else
+        if [[ "$NON_INTERACTIVE" == "true" ]]; then
+            mount_gid="$DEFAULT_GID"
+        else
+            question "Group ID for mounted files [$DEFAULT_GID]: "
+            read -r mount_gid
+            [[ -z "$mount_gid" ]] && mount_gid="$DEFAULT_GID"
+        fi
+    fi
     
     echo -e "  ${BOLD}Ownership:${NC} UID=$mount_uid, GID=$mount_gid"
     
     # Performance tuning
-    question "Enable performance tuning? [Y/n]: "
-    read -r perf_tune
+    if [[ "$NON_INTERACTIVE" == "false" ]]; then
+        question "Enable performance tuning? [Y/n]: "
+        read -r perf_tune
+        if [[ "$perf_tune" =~ ^[Nn]$ ]]; then
+            PERF_TUNING=false
+        fi
+    fi
     
     # Build final mount options
     MOUNT_OPTIONS="iocharset=utf8,rw,seal,credentials=$CREDENTIALS_FILE"
@@ -455,7 +931,7 @@ get_mount_options() {
     # Add Hetzner Storage Box specific options (seal is critical for Hetzner)
     MOUNT_OPTIONS="${MOUNT_OPTIONS},noperm,domain=WORKGROUP"
     
-    if [[ ! "$perf_tune" =~ ^[Nn]$ ]]; then
+    if [[ "$PERF_TUNING" == "true" ]]; then
         mount_options="rsize=130048,wsize=130048,cache=loose"
         echo -e "  ${BOLD}Performance:${NC} Optimized for Hetzner network"
     else
@@ -470,17 +946,29 @@ get_mount_options() {
 create_credentials_file() {
     subheader "Creating Credentials File"
     
+    if [[ "$DRY_RUN" == "true" ]]; then
+        info "[DRY RUN] Would create credentials file: $CREDENTIALS_FILE"
+        return 0
+    fi
+    
     if [[ -f "$CREDENTIALS_FILE" ]]; then
-        warning "Credentials file exists"
-        question "Overwrite existing credentials? [y/N]: "
-        read -r overwrite
-        
-        if [[ "$overwrite" =~ ^[Yy]$ ]]; then
+        if [[ "$NON_INTERACTIVE" == "true" ]]; then
+            # In non-interactive mode, always overwrite
+            info "Overwriting existing credentials file"
             cp "$CREDENTIALS_FILE" "${CREDENTIALS_FILE}$BACKUP_SUFFIX"
             info "Backed up to: ${CREDENTIALS_FILE}$BACKUP_SUFFIX"
         else
-            info "Using existing credentials"
-            return 0
+            warning "Credentials file exists"
+            question "Overwrite existing credentials? [y/N]: "
+            read -r overwrite
+            
+            if [[ "$overwrite" =~ ^[Yy]$ ]]; then
+                cp "$CREDENTIALS_FILE" "${CREDENTIALS_FILE}$BACKUP_SUFFIX"
+                info "Backed up to: ${CREDENTIALS_FILE}$BACKUP_SUFFIX"
+            else
+                info "Using existing credentials"
+                return 0
+            fi
         fi
     fi
     
@@ -527,6 +1015,21 @@ create_mount_point() {
     fi
 }
 
+# Build the mount.cifs command
+# Returns the command as a string via echo
+build_mount_command() {
+    local opts="${1:-$MOUNT_OPTIONS}"
+    local cmd="mount.cifs -o $opts"
+    
+    if [[ -n "$storage_path" ]]; then
+        cmd="$cmd //$storage_hostname/$storage_path $mount_point"
+    else
+        cmd="$cmd //$storage_hostname $mount_point"
+    fi
+    
+    echo "$cmd"
+}
+
 # Test SMB versions
 test_smb_versions() {
     subheader "Testing SMB Protocol Versions"
@@ -546,11 +1049,13 @@ test_smb_versions() {
     for version in "${SMB_VERSIONS[@]}"; do
         echo -n "  Testing SMB $version... "
         
-        local test_mount="mount.cifs -o vers=$version,${MOUNT_OPTIONS}"
-        if [[ -n "$storage_path" ]]; then
-            test_mount="$test_mount //$storage_hostname/$storage_path $mount_point"
-        else
-            test_mount="$test_mount //$storage_hostname $mount_point"
+        # Build test mount command with specific SMB version
+        local test_opts="vers=$version,${MOUNT_OPTIONS}"
+        local test_mount
+        test_mount=$(build_mount_command "$test_opts")
+        
+        if [[ "$VERBOSE" == "true" ]]; then
+            info "Testing: $test_mount"
         fi
         
         # Capture error for debugging
@@ -563,9 +1068,11 @@ test_smb_versions() {
         else
             echo -e "${YELLOW}✗ Not supported${NC}"
             # Log the actual error for debugging
-            log "Mount error for SMB $version: $last_error"
+            if [[ "$VERBOSE" == "true" ]]; then
+                log "Mount error for SMB $version: $last_error"
+            fi
             # Show first error for debugging
-            if [[ "$version" == "${SMB_VERSIONS[0]}" ]]; then
+            if [[ "$version" == "${SMB_VERSIONS[0]}" && "$VERBOSE" == "true" ]]; then
                 warning "Mount error: $last_error"
             fi
         fi
@@ -584,14 +1091,18 @@ test_smb_versions() {
 test_mount() {
     header "Testing Storage Box Mount"
     
+    if [[ "$DRY_RUN" == "true" ]]; then
+        info "[DRY RUN] Would test SMB versions and mount storage box"
+        info "[DRY RUN] Mount point: $mount_point"
+        info "[DRY RUN] Options: $MOUNT_OPTIONS"
+        return 0
+    fi
+    
     test_smb_versions
     
-    local mount_command="mount.cifs -o ${MOUNT_OPTIONS}"
-    if [[ -n "$storage_path" ]]; then
-        mount_command="$mount_command //$storage_hostname/$storage_path $mount_point"
-    else
-        mount_command="$mount_command //$storage_hostname $mount_point"
-    fi
+    # Build the final mount command
+    local mount_command
+    mount_command=$(build_mount_command)
     
     info "Mount command:"
     echo -e "${GRAY}  $mount_command${NC}"
@@ -649,30 +1160,46 @@ test_mount() {
     error_exit "Failed to mount after $MAX_RETRIES attempts. Last error: ${last_error_output}"
 }
 
-# Add to fstab or systemd
+# Add to fstab or systemd based on configuration
 add_permanent_mount() {
     header "Permanent Mount Configuration"
     
-    echo -e "${CYAN}Choose mount method:${NC}"
-    echo "  1) fstab (traditional, simple)"
-    echo "  2) systemd mount unit (modern, more control)"
-    echo "  3) Skip permanent mount"
-    echo
-    question "Your choice [1-3]: "
-    read -r mount_method
+    if [[ "$DRY_RUN" == "true" ]]; then
+        info "[DRY RUN] Would configure permanent mount using method: $MOUNT_METHOD"
+        return 0
+    fi
     
-    case "$mount_method" in
-        1)
+    # In interactive mode, ask for mount method
+    if [[ "$NON_INTERACTIVE" == "false" ]]; then
+        echo -e "${CYAN}Choose mount method:${NC}"
+        echo "  1) fstab (traditional, simple)"
+        echo "  2) systemd mount unit (modern, more control)"
+        echo "  3) Skip permanent mount"
+        echo
+        question "Your choice [1-3]: "
+        read -r mount_choice
+        
+        case "$mount_choice" in
+            1) MOUNT_METHOD="fstab" ;;
+            2) MOUNT_METHOD="systemd" ;;
+            3) MOUNT_METHOD="none" ;;
+            *) MOUNT_METHOD="none"; warning "Invalid choice. Skipping permanent mount." ;;
+        esac
+    fi
+    
+    # Apply the chosen mount method
+    case "$MOUNT_METHOD" in
+        fstab)
             add_to_fstab
             ;;
-        2)
+        systemd)
             create_systemd_mount
             ;;
-        3)
+        none)
             info "Skipping permanent mount configuration"
             ;;
         *)
-            warning "Invalid choice. Skipping permanent mount."
+            warning "Unknown mount method: $MOUNT_METHOD. Skipping permanent mount."
             ;;
     esac
 }
@@ -829,6 +1356,10 @@ cleanup_on_error() {
 
 # Main execution
 main() {
+    # Parse command-line arguments first
+    parse_arguments "$@"
+    
+    # Show welcome banner
     show_welcome
     
     # Pre-checks
@@ -836,7 +1367,11 @@ main() {
     
     header "System Preparation"
     detect_system
-    check_network
+    
+    # Only check network if not in dry-run mode
+    if [[ "$DRY_RUN" != "true" ]]; then
+        check_network
+    fi
     
     # Repository and packages
     fix_arm64_repositories
