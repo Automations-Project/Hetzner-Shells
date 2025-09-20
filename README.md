@@ -25,6 +25,18 @@ chmod +x Mount-Storage-Box.sh
 sudo ./Mount-Storage-Box.sh
 ```
 
+### One-Liners (Examples)
+```bash
+# Simply run:
+curl -fsSL https://raw.githubusercontent.com/Automations-Project/Hetzner-Shells/main/Storage/Mount-Storage-Box.sh | sudo bash -s
+
+# Just for testing (Dry Run):
+curl -fsSL https://raw.githubusercontent.com/Automations-Project/Hetzner-Shells/main/Storage/Mount-Storage-Box.sh | sudo bash -s -- --dry-run
+
+# Non-interactive:
+curl -fsSL https://raw.githubusercontent.com/Automations-Project/Hetzner-Shells/main/Storage/Mount-Storage-Box.sh | sudo bash -s -- --non-interactive --username u123456 --password-file /secure/pass.txt --mount-point /mnt/hetzner-storage --mount-method systemd
+```
+
 ## ✨ Features
 
 | Feature | Description |
