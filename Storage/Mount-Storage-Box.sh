@@ -2,26 +2,35 @@
 
 # Hetzner Storage Box Auto-Mount Script
 # Enhanced Production Version with Advanced Features
-# Version: 0.0.5
+# Version: 0.0.6
 # Author: Auto-generated for Hetzner Storage Box mounting
 
 set -eE
 trap 'handle_error $? $LINENO' ERR
 
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-PURPLE='\033[0;35m'
-CYAN='\033[0;36m'
-WHITE='\033[1;37m'
-GRAY='\033[0;90m'
-NC='\033[0m' # No Color
-BOLD='\033[1m'
+# Colors and styling - Safer fallback
+if [[ "${TERM:-}" != "dumb" ]] && [[ -t 1 ]] && command -v tput >/dev/null 2>&1; then
+    # Only use colors if terminal explicitly supports them
+    if tput colors >/dev/null 2>&1 && [[ $(tput colors 2>/dev/null || echo 0) -ge 8 ]]; then
+        RED='\033[0;31m'
+        GREEN='\033[0;32m'
+        YELLOW='\033[0;33m'
+        BLUE='\033[0;34m'
+        MAGENTA='\033[0;35m'
+        CYAN='\033[0;36m'
+        WHITE='\033[0;37m'
+        GRAY='\033[0;90m'
+        BOLD='\033[1m'
+        NC='\033[0m'
+    else
+        RED='' GREEN='' YELLOW='' BLUE='' MAGENTA='' CYAN='' WHITE='' GRAY='' BOLD='' NC=''
+    fi
+else
+    RED='' GREEN='' YELLOW='' BLUE='' MAGENTA='' CYAN='' WHITE='' GRAY='' BOLD='' NC=''
+fi
 
 # Configuration variables
-VERSION="0.0.5"
+VERSION="0.0.6"
 CREDENTIALS_FILE="/etc/cifs-credentials.txt"
 DEFAULT_MOUNT_POINT="/mnt/hetzner-storage"
 BACKUP_SUFFIX=".backup-$(date +%Y%m%d-%H%M%S)"
@@ -99,11 +108,20 @@ spinner() {
     local message=$2
     local i=0
     
-    while kill -0 "$pid" 2>/dev/null; do
-        printf "\r%s%s %s...%s" "${CYAN}" "${SPINNER_CHARS:i++%${#SPINNER_CHARS}:1}" "${message}" "${NC}"
-        sleep 0.1
-    done
-    printf "\r%*s\r" $((${#message} + 10)) ""
+    # Check if terminal supports colors
+    if [[ -t 1 ]] && command -v tput >/dev/null 2>&1; then
+        while kill -0 "$pid" 2>/dev/null; do
+            printf "\r%s%s %s...%s" "${CYAN}" "${SPINNER_CHARS:i++%${#SPINNER_CHARS}:1}" "${message}" "${NC}"
+            sleep 0.1
+        done
+        printf "\r%*s\r" $((${#message} + 10)) ""
+    else
+        # Fallback for terminals that don't support colors/spinners
+        echo -n "  $message... "
+        while kill -0 "$pid" 2>/dev/null; do
+            sleep 0.5
+        done
+    fi
 }
 
 show_welcome() {
