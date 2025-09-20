@@ -582,7 +582,7 @@ fix_arm64_repositories() {
     
     if [[ "$NON_INTERACTIVE" == "false" ]]; then
         question "Fix repository configuration? (recommended) [Y/n]: "
-        read -r fix_repos
+        read -r fix_repos </dev/tty
         
         if [[ "$fix_repos" =~ ^[Nn]$ ]]; then
             return 0
@@ -984,7 +984,7 @@ create_credentials_file() {
         else
             warning "Credentials file exists"
             question "Overwrite existing credentials? [y/N]: "
-            read -r overwrite
+            read -r overwrite </dev/tty
             
             if [[ "$overwrite" =~ ^[Yy]$ ]]; then
                 cp "$CREDENTIALS_FILE" "${CREDENTIALS_FILE}$BACKUP_SUFFIX"
@@ -1019,7 +1019,7 @@ create_mount_point() {
         if mountpoint -q "$mount_point"; then
             warning "Already mounted at $mount_point"
             question "Unmount existing mount? [y/N]: "
-            read -r unmount_first
+            read -r unmount_first </dev/tty
             
             if [[ "$unmount_first" =~ ^[Yy]$ ]]; then
                 umount "$mount_point" || warning "Failed to unmount"
@@ -1032,7 +1032,7 @@ create_mount_point() {
             warning "Directory not empty: $mount_point"
             find "$mount_point" -mindepth 1 -maxdepth 1 -ls | head -5
             question "Continue anyway? [y/N]: "
-            read -r continue_anyway
+            read -r continue_anyway </dev/tty
             
             [[ ! "$continue_anyway" =~ ^[Yy]$ ]] && error_exit "Aborted: non-empty mount point"
         fi
@@ -1199,7 +1199,7 @@ add_permanent_mount() {
         echo "  3) Skip permanent mount"
         echo
         question "Your choice [1-3]: "
-        read -r mount_choice
+        read -r mount_choice </dev/tty
         
         case "$mount_choice" in
             1) MOUNT_METHOD="fstab" ;;
