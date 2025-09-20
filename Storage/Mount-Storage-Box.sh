@@ -2,7 +2,7 @@
 
 # Hetzner Storage Box Auto-Mount Script
 # Enhanced Production Version with Advanced Features
-# Version: 0.0.6
+# Version: 0.0.7
 # Author: Auto-generated for Hetzner Storage Box mounting
 
 set -eE
@@ -30,7 +30,7 @@ else
 fi
 
 # Configuration variables
-VERSION="0.0.6"
+VERSION="0.0.7"
 CREDENTIALS_FILE="/etc/cifs-credentials.txt"
 DEFAULT_MOUNT_POINT="/mnt/hetzner-storage"
 BACKUP_SUFFIX=".backup-$(date +%Y%m%d-%H%M%S)"
@@ -115,19 +115,23 @@ spinner() {
     local message=$2
     local i=0
     
-    # Check if terminal supports colors
-    if [[ -t 1 ]] && command -v tput >/dev/null 2>&1; then
-        while kill -0 "$pid" 2>/dev/null; do
-            printf "\r%s%s %s...%s" "${CYAN}" "${SPINNER_CHARS:i++%${#SPINNER_CHARS}:1}" "${message}" "${NC}"
-            sleep 0.1
-        done
-        printf "\r%*s\r" $((${#message} + 10)) ""
+    # Colorless spinner to avoid escape sequences in consoles/log captures
+    while kill -0 "$pid" 2>/dev/null; do
+        if [[ -t 1 ]] && command -v tput >/dev/null 2>&1; then
+            printf "\r%s %s..." "${SPINNER_CHARS:i++%${#SPINNER_CHARS}:1}" "$message"
+            # Clear to end of line to avoid leftovers
+            tput el
+        else
+            printf "\r%s..." "$message"
+        fi
+        sleep 0.1
+    done
+    # Fully clear the line after the spinner finishes
+    if command -v tput >/dev/null 2>&1; then
+        printf "\r"
+        tput el
     else
-        # Fallback for terminals that don't support colors/spinners
-        echo -n "  $message... "
-        while kill -0 "$pid" 2>/dev/null; do
-            sleep 0.5
-        done
+        printf "\r%*s\r" $(( ${#message} + 5 )) ""
     fi
 }
 
