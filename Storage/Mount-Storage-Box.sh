@@ -26,7 +26,6 @@
 set -eEuo pipefail
 
 # Set up error handling and signal traps
-readonly SCRIPT_NAME="${BASH_SOURCE[0]:-$0}"
 trap 'handle_error $? $LINENO "$BASH_COMMAND"' ERR
 trap 'handle_signal INT' INT
 trap 'handle_signal TERM' TERM
@@ -1083,8 +1082,7 @@ test_smb_versions() {
         fi
         
         # Capture error for debugging
-        last_error=$(timeout 10 bash -c "$test_mount" 2>&1)
-        if [[ $? -eq 0 ]]; then
+        if last_error=$(timeout 10 bash -c "$test_mount" 2>&1); then
             echo -e "${GREEN}✓ Works${NC}"
             working_version="$version"
             umount "$mount_point" &>/dev/null || true
@@ -1137,8 +1135,7 @@ test_mount() {
     while [[ $attempt -le $MAX_RETRIES ]]; do
         echo -n "  Attempt $attempt/$MAX_RETRIES... "
         # Capture stderr to show real error on failure
-        last_error_output=$(bash -c "$mount_command" 2>&1)
-        if [[ $? -eq 0 ]]; then
+        if last_error_output=$(bash -c "$mount_command" 2>&1); then
             echo -e "${GREEN}✓${NC}"
             success "Storage Box mounted successfully!"
             
@@ -1421,7 +1418,8 @@ main() {
     info "Full log available at: $LOG_FILE"
 }
 
-# Entry point
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+# Entry point: Ensure script runs only when executed directly, not sourced.
+# This check is safe for piped execution (e.g., curl | bash).
+if [[ "${BASH_SOURCE[0]:-$0}" == "$0" ]]; then
     main "$@"
 fi
