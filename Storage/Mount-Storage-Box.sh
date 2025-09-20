@@ -3,7 +3,7 @@
 ################################################################################
 # Hetzner Storage Box Auto-Mount Script
 # Production Version with Advanced Features
-# Version: 1.0.0
+# Version: 1.0.1
 # Author: Nskha Automation Projects - Hetzner Community Edition
 # License: MIT
 #
@@ -56,7 +56,7 @@ fi
 ################################################################################
 
 # Script version
-readonly VERSION="1.0.0"
+readonly VERSION="1.0.1"
 # File paths and defaults
 readonly CREDENTIALS_FILE="/etc/cifs-credentials.txt"
 readonly DEFAULT_MOUNT_POINT="/mnt/hetzner-storage"
@@ -452,19 +452,18 @@ detect_system() {
     echo -e "  Architecture: ${WHITE}$ARCH${NC}"
     
     # Robust distribution detection using multiple methods
-    # Method 1: Try /etc/os-release with safe parsing (avoid readonly variable issues)
+    # Method 1: Try /etc/os-release with safe parsing (no shell eval, no unset)
     if [[ -f /etc/os-release ]]; then
-        # Parse directly without any shell evaluation to avoid readonly variable conflicts
-        DISTRO=$(awk -F= '/^ID=/ {gsub(/["'\'']/,"",$2); print $2; exit}' /etc/os-release 2>/dev/null || echo "unknown")
-        DISTRO_VERSION=$(awk -F= '/^VERSION_ID=/ {gsub(/["'\'']/,"",$2); print $2; exit}' /etc/os-release 2>/dev/null || echo "unknown")
-        DISTRO_CODENAME=$(awk -F= '/^VERSION_CODENAME=/ {gsub(/["'\'']/,"",$2); print $2; exit}' /etc/os-release 2>/dev/null || echo "")
-        DISTRO_NAME=$(awk -F= '/^PRETTY_NAME=/ {gsub(/["'\'']/,"",$2); print $2; exit}' /etc/os-release 2>/dev/null || echo "$DISTRO $DISTRO_VERSION")
-    # Method 2: Try /etc/lsb-release
+        DISTRO=$(grep '^ID=' /etc/os-release 2>/dev/null | head -1 | cut -d'=' -f2 | tr -d '"' || echo "unknown")
+        DISTRO_VERSION=$(grep '^VERSION_ID=' /etc/os-release 2>/dev/null | head -1 | cut -d'=' -f2 | tr -d '"' || echo "unknown")
+        DISTRO_CODENAME=$(grep '^VERSION_CODENAME=' /etc/os-release 2>/dev/null | head -1 | cut -d'=' -f2 | tr -d '"' || echo "")
+        DISTRO_NAME=$(grep '^PRETTY_NAME=' /etc/os-release 2>/dev/null | head -1 | cut -d'=' -f2 | tr -d '"' || echo "$DISTRO $DISTRO_VERSION")
+    # Method 2: Try /etc/lsb-release (safe parsing)
     elif [[ -f /etc/lsb-release ]]; then
-        DISTRO=$(grep '^DISTRIB_ID=' /etc/lsb-release 2>/dev/null | head -1 | cut -d'=' -f2 | sed 's/["'\'']//g' || echo "unknown")
-        DISTRO_VERSION=$(grep '^DISTRIB_RELEASE=' /etc/lsb-release 2>/dev/null | head -1 | cut -d'=' -f2 | sed 's/["'\'']//g' || echo "unknown")
-        DISTRO_CODENAME=$(grep '^DISTRIB_CODENAME=' /etc/lsb-release 2>/dev/null | head -1 | cut -d'=' -f2 | sed 's/["'\'']//g' || echo "")
-        DISTRO_NAME=$(grep '^DISTRIB_DESCRIPTION=' /etc/lsb-release 2>/dev/null | head -1 | cut -d'=' -f2 | sed 's/["'\'']//g' || echo "$DISTRO $DISTRO_VERSION")
+        DISTRO=$(grep '^DISTRIB_ID=' /etc/lsb-release 2>/dev/null | head -1 | cut -d'=' -f2 | tr -d '"' || echo "unknown")
+        DISTRO_VERSION=$(grep '^DISTRIB_RELEASE=' /etc/lsb-release 2>/dev/null | head -1 | cut -d'=' -f2 | tr -d '"' || echo "unknown")
+        DISTRO_CODENAME=$(grep '^DISTRIB_CODENAME=' /etc/lsb-release 2>/dev/null | head -1 | cut -d'=' -f2 | tr -d '"' || echo "")
+        DISTRO_NAME=$(grep '^DISTRIB_DESCRIPTION=' /etc/lsb-release 2>/dev/null | head -1 | cut -d'=' -f2 | tr -d '"' || echo "$DISTRO $DISTRO_VERSION")
     # Method 3: Try alternative detection methods
     elif [[ -f /etc/debian_version ]]; then
         DISTRO="debian"
