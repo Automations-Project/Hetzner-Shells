@@ -372,7 +372,7 @@ get_credentials() {
     storage_hostname="${storage_username%%-*}.your-storagebox.de"
     
     if [[ "$user_type" == "sub" ]]; then
-        storage_path="$storage_username"
+        storage_path=""  # Sub-users typically access root path
         default_mount="${DEFAULT_MOUNT_POINT}-${storage_username##*-}"
     else
         storage_path="backup"
@@ -383,7 +383,7 @@ get_credentials() {
     info "Generated configuration:"
     echo -e "  ${BOLD}Username:${NC} $storage_username"
     echo -e "  ${BOLD}Hostname:${NC} $storage_hostname"
-    echo -e "  ${BOLD}Path:${NC}     $storage_path"
+    echo -e "  ${BOLD}Path:${NC}     ${storage_path:-'/ (root)'}"
     echo -e "  ${BOLD}Type:${NC}     ${user_type^} User"
     echo
     
@@ -518,7 +518,11 @@ test_smb_versions() {
         echo -n "  Testing SMB $version... "
         
         local test_mount="mount.cifs -o vers=$version,${MOUNT_OPTIONS}"
-        test_mount="$test_mount //$storage_hostname/$storage_path $mount_point"
+        if [[ -n "$storage_path" ]]; then
+            test_mount="$test_mount //$storage_hostname/$storage_path $mount_point"
+        else
+            test_mount="$test_mount //$storage_hostname $mount_point"
+        fi
         
         # Capture error for debugging
         last_error=$(timeout 10 bash -c "$test_mount" 2>&1)
@@ -529,9 +533,11 @@ test_smb_versions() {
             break
         else
             echo -e "${YELLOW}✗ Not supported${NC}"
+            # Log the actual error for debugging
+            log "Mount error for SMB $version: $last_error"
             # Show first error for debugging
-            if [[ -z "$working_version" ]] && [[ "$version" == "${SMB_VERSIONS[0]}" ]]; then
-                info "Debug: $last_error" | head -1
+            if [[ "$version" == "${SMB_VERSIONS[0]}" ]]; then
+                warning "Mount error: $last_error"
             fi
         fi
     done
@@ -552,7 +558,11 @@ test_mount() {
     test_smb_versions
     
     local mount_command="mount.cifs -o ${MOUNT_OPTIONS}"
-    mount_command="$mount_command //$storage_hostname/$storage_path $mount_point"
+    if [[ -n "$storage_path" ]]; then
+        mount_command="$mount_command //$storage_hostname/$storage_path $mount_point"
+    else
+        mount_command="$mount_command //$storage_hostname $mount_point"
+    fi
     
     info "Mount command:"
     echo -e "${GRAY}  $mount_command${NC}"
@@ -628,7 +638,12 @@ add_permanent_mount() {
 add_to_fstab() {
     subheader "Adding fstab Entry"
     
-    local fstab_entry="//$storage_hostname/$storage_path $mount_point cifs ${MOUNT_OPTIONS},_netdev,x-systemd.automount,x-systemd.idle-timeout=60 0 0"
+    local fstab_entry
+    if [[ -n "$storage_path" ]]; then
+        fstab_entry="//$storage_hostname/$storage_path $mount_point cifs ${MOUNT_OPTIONS},_netdev,x-systemd.automount,x-systemd.idle-timeout=60 0 0"
+    else
+        fstab_entry="//$storage_hostname $mount_point cifs ${MOUNT_OPTIONS},_netdev,x-systemd.automount,x-systemd.idle-timeout=60 0 0"
+    fi
     
     # Backup fstab
     cp /etc/fstab "/etc/fstab$BACKUP_SUFFIX"
@@ -668,7 +683,7 @@ After=network-online.target
 Wants=network-online.target
 
 [Mount]
-What=//$storage_hostname/$storage_path
+What=//$storage_hostname$([ -n "$storage_path" ] && echo "/$storage_path" || echo "")
 Where=$mount_point
 Type=cifs
 Options=${MOUNT_OPTIONS},_netdev
