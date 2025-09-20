@@ -452,13 +452,13 @@ detect_system() {
     echo -e "  Architecture: ${WHITE}$ARCH${NC}"
     
     # Robust distribution detection using multiple methods
-    # Method 1: Try /etc/os-release with safe parsing
+    # Method 1: Try /etc/os-release with safe parsing (avoid readonly variable issues)
     if [[ -f /etc/os-release ]]; then
-        # Use a subshell with unset to avoid any readonly variable conflicts
-        DISTRO=$(unset VERSION; grep '^ID=' /etc/os-release 2>/dev/null | head -1 | cut -d'=' -f2 | sed 's/["'\'']//g' || echo "unknown")
-        DISTRO_VERSION=$(unset VERSION; grep '^VERSION_ID=' /etc/os-release 2>/dev/null | head -1 | cut -d'=' -f2 | sed 's/["'\'']//g' || echo "unknown")
-        DISTRO_CODENAME=$(unset VERSION; grep '^VERSION_CODENAME=' /etc/os-release 2>/dev/null | head -1 | cut -d'=' -f2 | sed 's/["'\'']//g' || echo "")
-        DISTRO_NAME=$(unset VERSION; grep '^PRETTY_NAME=' /etc/os-release 2>/dev/null | head -1 | cut -d'=' -f2 | sed 's/["'\'']//g' || echo "$DISTRO $DISTRO_VERSION")
+        # Parse directly without any shell evaluation to avoid readonly variable conflicts
+        DISTRO=$(awk -F= '/^ID=/ {gsub(/["'\'']/,"",$2); print $2; exit}' /etc/os-release 2>/dev/null || echo "unknown")
+        DISTRO_VERSION=$(awk -F= '/^VERSION_ID=/ {gsub(/["'\'']/,"",$2); print $2; exit}' /etc/os-release 2>/dev/null || echo "unknown")
+        DISTRO_CODENAME=$(awk -F= '/^VERSION_CODENAME=/ {gsub(/["'\'']/,"",$2); print $2; exit}' /etc/os-release 2>/dev/null || echo "")
+        DISTRO_NAME=$(awk -F= '/^PRETTY_NAME=/ {gsub(/["'\'']/,"",$2); print $2; exit}' /etc/os-release 2>/dev/null || echo "$DISTRO $DISTRO_VERSION")
     # Method 2: Try /etc/lsb-release
     elif [[ -f /etc/lsb-release ]]; then
         DISTRO=$(grep '^DISTRIB_ID=' /etc/lsb-release 2>/dev/null | head -1 | cut -d'=' -f2 | sed 's/["'\'']//g' || echo "unknown")
@@ -1373,7 +1373,8 @@ cleanup_on_error() {
         rm -f "${CREDENTIALS_FILE}.tmp"
     fi
     
-    if mountpoint -q "$mount_point" 2>/dev/null; then
+    # Only try to unmount if mount_point is defined
+    if [[ -n "${mount_point:-}" ]] && mountpoint -q "$mount_point" 2>/dev/null; then
         umount "$mount_point" 2>/dev/null || true
     fi
 }
