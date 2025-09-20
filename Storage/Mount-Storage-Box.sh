@@ -2,7 +2,7 @@
 
 # Hetzner Storage Box Auto-Mount Script
 # Enhanced Production Version with Advanced Features
-# Version: 3.0
+# Version: 0.0.5
 # Author: Auto-generated for Hetzner Storage Box mounting
 
 set -eE
@@ -21,7 +21,7 @@ NC='\033[0m' # No Color
 BOLD='\033[1m'
 
 # Configuration variables
-VERSION="0.0.1"
+VERSION="0.0.5"
 CREDENTIALS_FILE="/etc/cifs-credentials.txt"
 DEFAULT_MOUNT_POINT="/mnt/hetzner-storage"
 BACKUP_SUFFIX=".backup-$(date +%Y%m%d-%H%M%S)"
@@ -41,7 +41,9 @@ SPINNER_CHARS="⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
 # Functions
 log() {
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> "$LOG_FILE"
+    # Strip ANSI color codes for clean log files
+    local clean_msg=$(echo "$1" | sed 's/\x1b\[[0-9;]*m//g')
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $clean_msg" >> "$LOG_FILE"
     echo -e "$1"
 }
 
@@ -369,12 +371,12 @@ get_credentials() {
     done
     
     # Auto-generate hostname and path
-    storage_hostname="${storage_username%%-*}.your-storagebox.de"
-    
     if [[ "$user_type" == "sub" ]]; then
-        storage_path=""  # Sub-users typically access root path
+        storage_hostname="$storage_username.your-storagebox.de"  # Sub-users use full sub-user as hostname
+        storage_path="$storage_username"  # Sub-users access their own folder
         default_mount="${DEFAULT_MOUNT_POINT}-${storage_username##*-}"
     else
+        storage_hostname="${storage_username}.your-storagebox.de"  # Main users use username as hostname
         storage_path="backup"
         default_mount="$DEFAULT_MOUNT_POINT"
     fi
@@ -417,11 +419,11 @@ get_mount_options() {
     read -r perf_tune
     
     # Build final mount options
-    MOUNT_OPTIONS="iocharset=utf8,rw,credentials=$CREDENTIALS_FILE"
+    MOUNT_OPTIONS="iocharset=utf8,rw,seal,credentials=$CREDENTIALS_FILE"
     MOUNT_OPTIONS="${MOUNT_OPTIONS},uid=$mount_uid,gid=$mount_gid"
     MOUNT_OPTIONS="${MOUNT_OPTIONS},file_mode=0660,dir_mode=0770"
     
-    # Add Hetzner Storage Box specific options
+    # Add Hetzner Storage Box specific options (seal is critical for Hetzner)
     MOUNT_OPTIONS="${MOUNT_OPTIONS},noperm,domain=WORKGROUP"
     
     if [[ ! "$perf_tune" =~ ^[Nn]$ ]]; then

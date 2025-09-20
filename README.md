@@ -89,7 +89,7 @@ $ sudo ./Mount-Storage-Box.sh
 /_/ /_/\___/\__/ /___/_/ /_/\___/_/     
 
     Storage Box Auto-Mount Assistant
-Version 0.0.1 - Production Ready
+Version 0.0.5 - Production Ready
 
 ✓ Ubuntu 22.04 (ARM64) detected
 ✓ Network connectivity verified
