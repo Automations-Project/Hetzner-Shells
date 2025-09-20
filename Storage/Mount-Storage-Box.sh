@@ -755,9 +755,24 @@ EOF
     systemctl daemon-reload
     systemctl enable "$unit_name"
     systemctl enable "${unit_name%.mount}.automount"
-    systemctl start "${unit_name%.mount}.automount"
     
-    success "systemd mount units created and enabled"
+    # If the mount point is already mounted (from test step), unmount it so
+    # systemd automount can take control cleanly.
+    if mountpoint -q "$mount_point"; then
+        info "Unmounting existing mount at $mount_point to activate systemd automount"
+        if umount "$mount_point"; then
+            success "Unmounted $mount_point"
+        else
+            warning "Failed to unmount $mount_point; systemd may fail to start."
+            warning "You can unmount manually and then run: systemctl start ${unit_name%.mount}.automount"
+        fi
+    fi
+    
+    if systemctl start "${unit_name%.mount}.automount"; then
+        success "systemd mount units created and enabled"
+    else
+        warning "Failed to start automount. Run: journalctl -u ${unit_name%.mount}.automount -xe"
+    fi
 }
 
 # Show usage recommendations
