@@ -26,6 +26,7 @@
 set -eEuo pipefail
 
 # Set up error handling and signal traps
+readonly SCRIPT_NAME="${BASH_SOURCE[0]:-$0}"
 trap 'handle_error $? $LINENO "$BASH_COMMAND"' ERR
 trap 'handle_signal INT' INT
 trap 'handle_signal TERM' TERM

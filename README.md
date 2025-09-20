@@ -15,7 +15,7 @@
 
 ### One-Line Install (Recommended)
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Automations-Project/Hetzner-Shells/main/Storage/Mount-Storage-Box.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/Automations-Project/Hetzner-Shells/main/Storage/Mount-Storage-Box.sh | sudo bash -s
 ```
 
 ### Download & Review (Safer)
