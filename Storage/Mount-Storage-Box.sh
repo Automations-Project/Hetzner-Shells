@@ -416,18 +416,22 @@ get_mount_options() {
     question "Enable performance tuning? [Y/n]: "
     read -r perf_tune
     
+    # Build final mount options
+    MOUNT_OPTIONS="iocharset=utf8,rw,credentials=$CREDENTIALS_FILE"
+    MOUNT_OPTIONS="${MOUNT_OPTIONS},uid=$mount_uid,gid=$mount_gid"
+    MOUNT_OPTIONS="${MOUNT_OPTIONS},file_mode=0660,dir_mode=0770"
+    
+    # Add Hetzner Storage Box specific options
+    MOUNT_OPTIONS="${MOUNT_OPTIONS},noperm,domain=WORKGROUP"
+    
     if [[ ! "$perf_tune" =~ ^[Nn]$ ]]; then
         mount_options="rsize=130048,wsize=130048,cache=loose"
         echo -e "  ${BOLD}Performance:${NC} Optimized for Hetzner network"
     else
-        mount_options=""
+        mount_options="cache=strict"
         echo -e "  ${BOLD}Performance:${NC} Default settings"
     fi
     
-    # Build final mount options
-    MOUNT_OPTIONS="iocharset=utf8,rw,seal,credentials=$CREDENTIALS_FILE"
-    MOUNT_OPTIONS="${MOUNT_OPTIONS},uid=$mount_uid,gid=$mount_gid"
-    MOUNT_OPTIONS="${MOUNT_OPTIONS},file_mode=0660,dir_mode=0770"
     [[ -n "$mount_options" ]] && MOUNT_OPTIONS="${MOUNT_OPTIONS},${mount_options}"
 }
 
@@ -499,6 +503,16 @@ test_smb_versions() {
     subheader "Testing SMB Protocol Versions"
     
     local working_version=""
+    local last_error=""
+    
+    # First test basic connectivity
+    echo -n "  Testing connectivity to $storage_hostname:445... "
+    if timeout 5 bash -c "echo >/dev/tcp/$storage_hostname/445" 2>/dev/null; then
+        echo -e "${GREEN}✓${NC}"
+    else
+        echo -e "${RED}✗${NC}"
+        warning "Cannot connect to $storage_hostname:445. Check firewall/network."
+    fi
     
     for version in "${SMB_VERSIONS[@]}"; do
         echo -n "  Testing SMB $version... "
@@ -506,18 +520,24 @@ test_smb_versions() {
         local test_mount="mount.cifs -o vers=$version,${MOUNT_OPTIONS}"
         test_mount="$test_mount //$storage_hostname/$storage_path $mount_point"
         
-        if timeout 10 bash -c "$test_mount" &>/dev/null; then
+        # Capture error for debugging
+        last_error=$(timeout 10 bash -c "$test_mount" 2>&1)
+        if [[ $? -eq 0 ]]; then
             echo -e "${GREEN}✓ Works${NC}"
             working_version="$version"
-            umount "$mount_point" &>/dev/null
+            umount "$mount_point" &>/dev/null || true
             break
         else
             echo -e "${YELLOW}✗ Not supported${NC}"
+            # Show first error for debugging
+            if [[ -z "$working_version" ]] && [[ "$version" == "${SMB_VERSIONS[0]}" ]]; then
+                info "Debug: $last_error" | head -1
+            fi
         fi
     done
     
     if [[ -z "$working_version" ]]; then
-        error_exit "No compatible SMB version found. Check credentials and network."
+        error_exit "No compatible SMB version found. Last error: $last_error"
     fi
     
     SMB_VERSION="$working_version"
