@@ -50,10 +50,17 @@ SPINNER_CHARS="⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
 # Functions
 log() {
-    # Strip ANSI color codes for clean log files
-    local clean_msg=$(echo "$1" | sed 's/\x1b\[[0-9;]*m//g')
+    # Strip both real ESC sequences and literal \033 sequences before writing to log
+    # Real ESC bytes: \x1b[[...letter]
+    # Literal text:  \033[[...letter]
+    local msg="$1"
+    local clean_msg
+    clean_msg=$(printf '%s' "$msg" \
+        | sed -E 's/\x1b\[[0-9;]*[A-Za-z]//g' \
+        | sed -E 's/\\033\[[0-9;]*[A-Za-z]//g')
     echo "$(date '+%Y-%m-%d %H:%M:%S') - $clean_msg" >> "$LOG_FILE"
-    echo -e "$1"
+    # For console, keep original (with colors if available)
+    echo -e "$msg"
 }
 
 handle_error() {
@@ -473,14 +480,12 @@ create_credentials_file() {
         fi
     fi
     
-    # Handle special characters in password
-    escaped_password=$(printf "%s\n" "$storage_password" | sed 's/[[\.*^$()+?{|]/\\&/g')
-    
-    cat > "$CREDENTIALS_FILE" << EOF
-username=$storage_username
-password=$escaped_password
-domain=WORKGROUP
-EOF
+    # Write password as-is for CIFS credentials file (no escaping required)
+    {
+        echo "username=$storage_username"
+        echo "password=$storage_password"
+        echo "domain=WORKGROUP"
+    } > "$CREDENTIALS_FILE"
     
     chmod 0600 "$CREDENTIALS_FILE"
     chown root:root "$CREDENTIALS_FILE"
@@ -589,10 +594,12 @@ test_mount() {
     echo
     
     local attempt=1
+    local last_error_output=""
     while [[ $attempt -le $MAX_RETRIES ]]; do
         echo -n "  Attempt $attempt/$MAX_RETRIES... "
-        
-        if $mount_command &>/dev/null; then
+        # Capture stderr to show real error on failure
+        last_error_output=$(bash -c "$mount_command" 2>&1)
+        if [[ $? -eq 0 ]]; then
             echo -e "${GREEN}✓${NC}"
             success "Storage Box mounted successfully!"
             
@@ -618,12 +625,24 @@ test_mount() {
             return 0
         else
             echo -e "${RED}✗${NC}"
+            # Log and display the real error output
+            log "mount.cifs error: $last_error_output"
+            if echo "$last_error_output" | grep -qi "Permission denied"; then
+                warning "Mount failed: Permission denied. Likely causes:"
+                echo "  - Wrong username or password in $CREDENTIALS_FILE"
+                echo "  - Sub-user disabled or wrong sub-user used"
+                echo "  - Using a share path not permitted for this sub-user"
+            elif echo "$last_error_output" | grep -qi "No such file"; then
+                warning "Mount failed: Share path not found. Verify //${storage_hostname}/${storage_path}"
+            elif echo "$last_error_output" | grep -qi "Invalid argument"; then
+                warning "Mount failed: Invalid argument. Check SMB version and mount options."
+            fi
             ((attempt++))
             [[ $attempt -le $MAX_RETRIES ]] && sleep $RETRY_DELAY
         fi
     done
     
-    error_exit "Failed to mount after $MAX_RETRIES attempts"
+    error_exit "Failed to mount after $MAX_RETRIES attempts. Last error: ${last_error_output}"
 }
 
 # Add to fstab or systemd
