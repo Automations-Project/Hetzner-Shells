@@ -3,7 +3,7 @@
 ################################################################################
 # Hetzner Storage Box Auto-Mount Script
 # Production Version with Advanced Features
-# Version: 1.0.1
+# Version: 1.0.2
 # Author: Nskha Automation Projects - Hetzner Community Edition
 # License: MIT
 #
@@ -11,6 +11,7 @@
 #   Automates the mounting of Hetzner Storage Boxes on Linux systems.
 #   Supports multiple distributions, SMB protocol negotiation, and
 #   both interactive and non-interactive modes.
+
 #
 # Usage:
 #   Interactive mode: ./Mount-Storage-Box.sh
@@ -56,7 +57,7 @@ fi
 ################################################################################
 
 # Script version
-readonly VERSION="1.0.1"
+readonly VERSION="1.0.2"
 # File paths and defaults
 readonly CREDENTIALS_FILE="/etc/cifs-credentials.txt"
 readonly DEFAULT_MOUNT_POINT="/mnt/hetzner-storage"
@@ -85,10 +86,10 @@ VERBOSE=false
 DRY_RUN=false
 
 # Logging configuration
-readonly LOG_DIR="/var/log/hetzner-mount"
-mkdir -p "$LOG_DIR" 2>/dev/null || true
-LOG_FILE="$LOG_DIR/mount-$(date +%Y%m%d-%H%M%S).log"
-readonly LOG_FILE
+# Initialize logging variables without creating directories yet
+LOG_DIR="/var/log/hetzner-mount"
+LOG_FILE=""  # Will be set after root check
+LOG_ENABLED=false  # Will be enabled after successful log setup
 
 # UI elements
 readonly SPINNER_CHARS="⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
@@ -112,14 +113,19 @@ log() {
     local msg="${1:-}"
     local clean_msg
     
-    # Remove ANSI escape sequences for log file
-    # This handles both actual ESC bytes (\x1b) and literal \033 strings
-    clean_msg=$(printf '%s' "$msg" \
-        | sed -E 's/\x1b\[[0-9;]*[A-Za-z]//g' \
-        | sed -E 's/\\033\[[0-9;]*[A-Za-z]//g')
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - $clean_msg" >> "$LOG_FILE"
-    # For console, keep original (with colors if available)
+    # Always output to console
     echo -e "$msg"
+    
+    # Only write to log file if logging is enabled and file is writable
+    if [[ "$LOG_ENABLED" == "true" ]] && [[ -n "$LOG_FILE" ]]; then
+        # Remove ANSI escape sequences for log file
+        # This handles both actual ESC bytes (\x1b) and literal \033 strings
+        clean_msg=$(printf '%s' "$msg" \
+            | sed -E 's/\x1b\[[0-9;]*[A-Za-z]//g' \
+            | sed -E 's/\\033\[[0-9;]*[A-Za-z]//g')
+        # Write to log file if possible
+        echo "$(date '+%Y-%m-%d %H:%M:%S') - $clean_msg" >> "$LOG_FILE" 2>/dev/null || true
+    fi
 }
 
 # Enhanced error handler with command context
@@ -135,7 +141,9 @@ handle_error() {
     log "${RED}✗ ERROR: Command failed at line $line_no${NC}"
     log "${RED}  Exit code: $exit_code${NC}"
     log "${RED}  Command: $cmd${NC}"
-    log "${RED}  Log file: $LOG_FILE${NC}"
+    if [[ "$LOG_ENABLED" == "true" ]] && [[ -n "$LOG_FILE" ]]; then
+        log "${RED}  Log file: $LOG_FILE${NC}"
+    fi
     
     cleanup_on_error
     exit "$exit_code"
@@ -561,6 +569,60 @@ detect_system() {
 check_root() {
     if [[ $EUID -ne 0 ]]; then
         error_exit "This script must be run as root. Please run: sudo $0"
+    fi
+}
+
+# Setup logging after root check
+# Creates log directory and initializes log file
+# Falls back to temp directory if /var/log is not writable
+setup_logging() {
+    local timestamp
+    timestamp=$(date +%Y%m%d-%H%M%S)
+    
+    # Try to create the primary log directory
+    if mkdir -p "$LOG_DIR" 2>/dev/null; then
+        LOG_FILE="$LOG_DIR/mount-${timestamp}.log"
+        # Test if we can write to the log file
+        if echo "Log initialized at $(date)" >> "$LOG_FILE" 2>/dev/null; then
+            LOG_ENABLED=true
+            readonly LOG_FILE
+            if [[ "$VERBOSE" == "true" ]]; then
+                info "Logging enabled: $LOG_FILE"
+            fi
+        else
+            # Can't write to the file, disable logging
+            LOG_ENABLED=false
+            LOG_FILE=""
+            if [[ "$VERBOSE" == "true" ]]; then
+                warning "Cannot write to log file in $LOG_DIR, logging disabled"
+            fi
+        fi
+    else
+        # Try fallback to /tmp if we're root but still can't create /var/log directory
+        LOG_DIR="/tmp/hetzner-mount"
+        if mkdir -p "$LOG_DIR" 2>/dev/null; then
+            LOG_FILE="$LOG_DIR/mount-${timestamp}.log"
+            if echo "Log initialized at $(date)" >> "$LOG_FILE" 2>/dev/null; then
+                LOG_ENABLED=true
+                readonly LOG_FILE
+                if [[ "$VERBOSE" == "true" ]]; then
+                    warning "Using fallback log location: $LOG_FILE"
+                fi
+            else
+                LOG_ENABLED=false
+                LOG_FILE=""
+                if [[ "$VERBOSE" == "true" ]]; then
+                    warning "Cannot create log file, logging disabled"
+                fi
+            fi
+        else
+            # Complete failure, disable logging
+            LOG_ENABLED=false
+            LOG_FILE=""
+            if [[ "$VERBOSE" == "true" ]]; then
+                warning "Cannot create log directory, logging disabled"
+            fi
+        fi
     fi
 }
 
@@ -1387,6 +1449,9 @@ main() {
     
     # Pre-checks
     check_root
+    
+    # Setup logging after confirming root access
+    setup_logging
     
     header "System Preparation"
     detect_system

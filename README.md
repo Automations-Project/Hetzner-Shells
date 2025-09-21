@@ -130,7 +130,7 @@ sudo ./Mount-Storage-Box.sh --help
 ```
 Hetzner-Shells/
 ├── Storage/
-│   └── Mount-Storage-Box.sh    # Main auto-mount script (v1.0.1)
+│   └── Mount-Storage-Box.sh    # Main auto-mount script (v1.0.2)
 ├── README.md                   # This file
 ├── LICENSE                     # MIT License
 ├── TESTING.md                  # Testing & deployment guide
