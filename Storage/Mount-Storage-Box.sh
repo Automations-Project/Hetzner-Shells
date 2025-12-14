@@ -3,7 +3,7 @@
 ################################################################################
 # Hetzner Storage Box Auto-Mount Script
 # Production Version with Advanced Features
-# Version: 1.1.0
+# Version: 1.1.1
 # Author: Nskha Automation Projects - Hetzner Community Edition
 # License: MIT
 #
@@ -725,7 +725,6 @@ detect_system() {
     
     # Set Ubuntu-specific variables for compatibility
     if [[ "$DISTRO" == "ubuntu" ]]; then
-        UBUNTU_VERSION="$DISTRO_VERSION"
         UBUNTU_CODENAME="$DISTRO_CODENAME"
     fi
     
@@ -902,10 +901,17 @@ install_packages() {
             install_cmd=(apt-get install -y)
             check_cmd=(dpkg -l)
             
-            # Add kernel modules for older Ubuntu versions
-            if [[ "$DISTRO" == "ubuntu" ]] && [[ -n "${UBUNTU_VERSION:-}" ]]; then
-                if dpkg --compare-versions "$UBUNTU_VERSION" lt "22.04" 2>/dev/null; then
-                    packages+=("linux-modules-extra-$(uname -r)")
+            # Check if CIFS kernel module is available
+            # If not, we need linux-modules-extra package (common in containers/VMs)
+            if ! modprobe cifs &>/dev/null; then
+                # shellcheck disable=SC2155
+                local kernel_pkg="linux-modules-extra-$(uname -r)"
+                if apt-cache show "$kernel_pkg" &>/dev/null; then
+                    info "CIFS kernel module not loaded, adding $kernel_pkg"
+                    packages+=("$kernel_pkg")
+                else
+                    warning "CIFS module missing and $kernel_pkg not available"
+                    warning "You may need to install kernel modules manually"
                 fi
             fi
             ;;
@@ -963,6 +969,18 @@ install_packages() {
         success "mount.cifs available (version: $cifs_version)"
     else
         error_exit "mount.cifs not found after installation"
+    fi
+    
+    # Ensure CIFS kernel module is loaded
+    if ! lsmod | grep -q "^cifs"; then
+        info "Loading CIFS kernel module..."
+        if modprobe cifs 2>/dev/null; then
+            success "CIFS kernel module loaded"
+        else
+            error_exit "Failed to load CIFS kernel module. You may need to install linux-modules-extra-$(uname -r) or reboot after installing it."
+        fi
+    else
+        success "CIFS kernel module already loaded"
     fi
 }
 
