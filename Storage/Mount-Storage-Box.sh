@@ -3,7 +3,7 @@
 ################################################################################
 # Hetzner Storage Box Auto-Mount Script
 # Production Version with Advanced Features
-# Version: 1.0.2
+# Version: 1.1.0
 # Author: Nskha Automation Projects - Hetzner Community Edition
 # License: MIT
 #
@@ -11,11 +11,13 @@
 #   Automates the mounting of Hetzner Storage Boxes on Linux systems.
 #   Supports multiple distributions, SMB protocol negotiation, and
 #   both interactive and non-interactive modes.
-
+#   Supports multiple storage boxes via named profiles.
 #
 # Usage:
 #   Interactive mode: ./Mount-Storage-Box.sh
 #   Non-interactive: ./Mount-Storage-Box.sh --non-interactive [OPTIONS]
+#   With profile:     ./Mount-Storage-Box.sh --profile NAME [OPTIONS]
+#   List profiles:    ./Mount-Storage-Box.sh --list-profiles
 #   Help: ./Mount-Storage-Box.sh --help
 ################################################################################
 
@@ -34,7 +36,8 @@ trap 'handle_signal TERM' TERM
 # Colors and styling - Safer fallback
 if [[ "${TERM:-}" != "dumb" ]] && [[ -t 1 ]] && command -v tput >/dev/null 2>&1; then
     # Only use colors if terminal explicitly supports them
-    if tput colors >/dev/null 2>&1 && [[ $(tput colors 2>/dev/null || echo 0) -ge 8 ]]; then
+    # shellcheck disable=SC2312
+    if tput colors >/dev/null 2>&1 && [[ "$(tput colors 2>/dev/null || echo 0)" -ge 8 ]]; then
         RED='\033[0;31m'
         GREEN='\033[0;32m'
         YELLOW='\033[0;33m'
@@ -57,19 +60,25 @@ fi
 ################################################################################
 
 # Script version
-readonly VERSION="1.0.2"
-# File paths and defaults
-readonly CREDENTIALS_FILE="/etc/cifs-credentials.txt"
-readonly DEFAULT_MOUNT_POINT="/mnt/hetzner-storage"
-BACKUP_SUFFIX=".backup-$(date +%Y%m%d-%H%M%S)"
-readonly BACKUP_SUFFIX
+readonly VERSION="1.1.0"
+# File paths and defaults - these will be computed dynamically based on profile
+readonly CREDENTIALS_BASE="/etc/cifs-credentials"
+readonly MOUNT_POINT_BASE="/mnt/hetzner-storage"
+# shellcheck disable=SC2155
+readonly BACKUP_SUFFIX=".backup-$(date +%Y%m%d-%H%M%S)"
+
+# Profile configuration - empty means default (backward compatible)
+PROFILE=""
+# These will be set dynamically based on profile in compute_profile_paths()
+CREDENTIALS_FILE=""
+DEFAULT_MOUNT_POINT=""
 readonly MAX_RETRIES=3
 readonly RETRY_DELAY=5
 readonly SMB_VERSIONS=("3.1.1" "3.0" "2.1" "2.0" "1.0")
-DEFAULT_UID=$(id -u)
-readonly DEFAULT_UID
-DEFAULT_GID=$(id -g)
-readonly DEFAULT_GID
+# shellcheck disable=SC2155
+readonly DEFAULT_UID=$(id -u)
+# shellcheck disable=SC2155
+readonly DEFAULT_GID=$(id -g)
 
 # Non-interactive mode variables (can be set via command line)
 NON_INTERACTIVE=false
@@ -84,6 +93,8 @@ MOUNT_METHOD="systemd"  # systemd, fstab, or none
 SKIP_CONFIRMATION=false
 VERBOSE=false
 DRY_RUN=false
+PROFILE_ARG=""
+LIST_PROFILES=false
 
 # Logging configuration
 # Initialize logging variables without creating directories yet
@@ -203,7 +214,7 @@ header() {
     
     echo
     echo -e "${BLUE}${BOLD}╔$(printf '═%.0s' {1..60})╗${NC}"
-    echo -e "${BLUE}${BOLD}║$(printf ' %.0s' $(seq 1 $padding))$text$(printf ' %.0s' $(seq 1 $right_padding))║${NC}"
+    echo -e "${BLUE}${BOLD}║$(printf ' %.0s' $(seq 1 "$padding"))$text$(printf ' %.0s' $(seq 1 "$right_padding"))║${NC}"
     echo -e "${BLUE}${BOLD}╚$(printf '═%.0s' {1..60})╝${NC}"
     echo
 }
@@ -252,6 +263,125 @@ spinner() {
 }
 
 ################################################################################
+# Profile Management Functions
+################################################################################
+
+# Compute dynamic file paths based on profile
+# Sets CREDENTIALS_FILE and DEFAULT_MOUNT_POINT based on PROFILE variable
+# Must be called after parse_arguments() and before any functions that use these paths
+compute_profile_paths() {
+    if [[ -n "$PROFILE" ]]; then
+        # Profile-specific paths
+        CREDENTIALS_FILE="${CREDENTIALS_BASE}-${PROFILE}.txt"
+        DEFAULT_MOUNT_POINT="${MOUNT_POINT_BASE}-${PROFILE}"
+        if [[ "$VERBOSE" == "true" ]]; then
+            info "Using profile: $PROFILE"
+            info "  Credentials file: $CREDENTIALS_FILE"
+            info "  Default mount point: $DEFAULT_MOUNT_POINT"
+        fi
+    else
+        # Default paths (backward compatible)
+        CREDENTIALS_FILE="${CREDENTIALS_BASE}.txt"
+        DEFAULT_MOUNT_POINT="${MOUNT_POINT_BASE}"
+    fi
+}
+
+# List all configured profiles
+# Searches for credentials files and systemd mount units
+list_profiles() {
+    header "Configured Storage Box Profiles"
+    
+    local found_profiles=false
+    local profiles=()
+    
+    # Find profiles from credentials files
+    while IFS= read -r -d '' cred_file; do
+        local profile_name
+        local filename
+        filename=$(basename "$cred_file")
+        
+        # Extract profile name from filename
+        if [[ "$filename" == "cifs-credentials.txt" ]]; then
+            profile_name="(default)"
+        elif [[ "$filename" =~ ^cifs-credentials-(.+)\.txt$ ]]; then
+            profile_name="${BASH_REMATCH[1]}"
+        else
+            continue
+        fi
+        
+        profiles+=("$profile_name:$cred_file")
+        found_profiles=true
+    done < <(find /etc -maxdepth 1 -name "cifs-credentials*.txt" -print0 2>/dev/null)
+    
+    if [[ "$found_profiles" == "false" ]]; then
+        info "No profiles configured yet."
+        echo
+        echo "To create a profile, run:"
+        echo "  $0 --profile <name> [OPTIONS]"
+        echo
+        echo "Or run without --profile for default configuration:"
+        echo "  $0"
+        return 0
+    fi
+    
+    echo -e "${CYAN}${BOLD}Found Profiles:${NC}"
+    echo -e "${GRAY}$(printf '─%.0s' {1..60})${NC}"
+    
+    for profile_entry in "${profiles[@]}"; do
+        IFS=':' read -r profile_name cred_file <<< "$profile_entry"
+        
+        echo -e "\n${WHITE}${BOLD}Profile: $profile_name${NC}"
+        echo -e "  Credentials: ${GRAY}$cred_file${NC}"
+        
+        # Get username from credentials file
+        local username
+        username=$(grep '^username=' "$cred_file" 2>/dev/null | cut -d'=' -f2 || echo "unknown")
+        echo -e "  Username: ${GRAY}$username${NC}"
+        
+        # Find associated mount points
+        local mount_point_suffix=""
+        if [[ "$profile_name" != "(default)" ]]; then
+            mount_point_suffix="-${profile_name}"
+        fi
+        local expected_mount="${MOUNT_POINT_BASE}${mount_point_suffix}"
+        
+        # Check if mounted
+        if mountpoint -q "$expected_mount" 2>/dev/null; then
+            echo -e "  Mount point: ${GREEN}$expected_mount (mounted)${NC}"
+            # Show disk usage
+            local usage
+            usage=$(df -h "$expected_mount" 2>/dev/null | tail -1 | awk '{print $3 "/" $2 " (" $5 ")"}')
+            echo -e "  Usage: ${GRAY}$usage${NC}"
+        elif [[ -d "$expected_mount" ]]; then
+            echo -e "  Mount point: ${YELLOW}$expected_mount (not mounted)${NC}"
+        else
+            echo -e "  Mount point: ${GRAY}$expected_mount (not created)${NC}"
+        fi
+        
+        # Check for systemd units
+        local unit_name
+        unit_name=$(systemd-escape -p "$expected_mount" 2>/dev/null).mount
+        if [[ -f "/etc/systemd/system/$unit_name" ]]; then
+            local unit_status
+            unit_status=$(systemctl is-enabled "$unit_name" 2>/dev/null || echo "unknown")
+            echo -e "  Systemd unit: ${GRAY}$unit_name ($unit_status)${NC}"
+        fi
+        
+        # Check for fstab entry
+        if grep -q "$expected_mount" /etc/fstab 2>/dev/null; then
+            echo -e "  fstab: ${GRAY}configured${NC}"
+        fi
+    done
+    
+    echo
+    echo -e "${GRAY}$(printf '─%.0s' {1..60})${NC}"
+    echo -e "${CYAN}Total profiles: ${#profiles[@]}${NC}"
+    echo
+    echo "To add a new profile:"
+    echo "  $0 --profile <name> -n -u <username> -f <password-file>"
+}
+
+################################################################################
 # Help and Usage Functions
 ################################################################################
 
@@ -261,6 +391,7 @@ show_usage() {
 Usage: $(basename "$0") [OPTIONS]
 
 Automatically mount Hetzner Storage Box on Linux systems.
+Supports multiple storage boxes via named profiles.
 
 OPTIONS:
     -h, --help              Show this help message
@@ -269,7 +400,10 @@ OPTIONS:
     -u, --username USER     Storage Box username (e.g., u123456)
     -p, --password PASS     Storage Box password (NOT recommended)
     -f, --password-file FILE Read password from file
-    -m, --mount-point PATH  Custom mount point (default: $DEFAULT_MOUNT_POINT)
+    -m, --mount-point PATH  Custom mount point (default: $MOUNT_POINT_BASE)
+    --profile NAME          Profile name for multi-account support
+                            Creates separate credentials and mount points
+    --list-profiles         List all configured profiles and exit
     --uid UID               User ID for mounted files
     --gid GID               Group ID for mounted files
     --no-tuning             Disable performance tuning
@@ -287,6 +421,24 @@ EXAMPLES:
     
     # Custom mount point
     $(basename "$0") -n -u u123456 -f /secure/pass.txt -m /data/storage
+    
+    # Mount primary storage with profile
+    $(basename "$0") --profile primary -n -u u123456 -f /secure/pass1.txt
+    
+    # Mount backup storage with different profile
+    $(basename "$0") --profile backup -n -u u789012 -f /secure/pass2.txt
+    
+    # List all configured profiles
+    $(basename "$0") --list-profiles
+
+PROFILE USAGE:
+    Profiles allow mounting multiple Hetzner Storage Boxes simultaneously.
+    Each profile creates:
+      - Credentials file: /etc/cifs-credentials-{profile}.txt
+      - Mount point:      /mnt/hetzner-storage-{profile}
+      - Systemd units:    Named with profile suffix
+    
+    Without --profile, uses default paths (backward compatible).
 
 For more information, visit:
 https://docs.hetzner.com/robot/storage-box
@@ -384,11 +536,28 @@ parse_arguments() {
                 VERBOSE=true
                 shift
                 ;;
+            --profile)
+                PROFILE_ARG="$2"
+                shift 2
+                ;;
+            --list-profiles)
+                LIST_PROFILES=true
+                shift
+                ;;
             *)
                 error_exit "Unknown option: $1\nUse --help for usage information."
                 ;;
         esac
     done
+    
+    # Set profile if provided
+    if [[ -n "$PROFILE_ARG" ]]; then
+        # Validate profile name (alphanumeric, dash, underscore only)
+        if [[ ! "$PROFILE_ARG" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+            error_exit "Invalid profile name: $PROFILE_ARG\nProfile names can only contain letters, numbers, dashes, and underscores."
+        fi
+        PROFILE="$PROFILE_ARG"
+    fi
     
     # Validate non-interactive mode requirements (skip in dry-run)
     if [[ "$NON_INTERACTIVE" == "true" && "$DRY_RUN" != "true" ]]; then
@@ -704,7 +873,7 @@ update_packages() {
     fi
     
     ($update_cmd > /dev/null 2>&1) &
-    spinner $! "Updating package lists"
+    spinner "$!" "Updating package lists"
     
     if wait $!; then
         success "Package lists updated"
@@ -723,15 +892,15 @@ install_packages() {
     fi
     
     local packages
-    local install_cmd
-    local check_cmd
+    local -a install_cmd
+    local -a check_cmd
     
     # Set package names and commands based on distribution
     case "$PACKAGE_MANAGER" in
         apt)
             packages=("cifs-utils" "keyutils")
-            install_cmd="apt-get install -y"
-            check_cmd="dpkg -l | grep -q '^ii'"
+            install_cmd=(apt-get install -y)
+            check_cmd=(dpkg -l)
             
             # Add kernel modules for older Ubuntu versions
             if [[ "$DISTRO" == "ubuntu" ]] && [[ -n "${UBUNTU_VERSION:-}" ]]; then
@@ -742,13 +911,13 @@ install_packages() {
             ;;
         yum|dnf)
             packages=("cifs-utils" "keyutils")
-            install_cmd="$PACKAGE_MANAGER install -y"
-            check_cmd="rpm -q"
+            install_cmd=("$PACKAGE_MANAGER" install -y)
+            check_cmd=(rpm -q)
             ;;
         zypper)
             packages=("cifs-utils" "keyutils")
-            install_cmd="zypper install -y"
-            check_cmd="rpm -q"
+            install_cmd=(zypper install -y)
+            check_cmd=(rpm -q)
             ;;
         *)
             error_exit "Unsupported package manager: $PACKAGE_MANAGER"
@@ -758,15 +927,27 @@ install_packages() {
     # Install each package
     for package in "${packages[@]}"; do
         # Check if package is already installed
-        if $check_cmd "$package" &>/dev/null; then
+        # For apt, we need special handling since dpkg -l needs grep
+        local is_installed=false
+        if [[ "$PACKAGE_MANAGER" == "apt" ]]; then
+            if dpkg -l "$package" 2>/dev/null | grep -q "^ii"; then
+                is_installed=true
+            fi
+        else
+            if "${check_cmd[@]}" "$package" &>/dev/null; then
+                is_installed=true
+            fi
+        fi
+        
+        if [[ "$is_installed" == "true" ]]; then
             success "$package already installed"
         else
             echo -n "  Installing $package... "
             if [[ "$VERBOSE" == "true" ]]; then
-                info "Running: $install_cmd $package"
+                info "Running: ${install_cmd[*]} $package"
             fi
             
-            if $install_cmd "$package" &>/dev/null; then
+            if "${install_cmd[@]}" "$package" &>/dev/null; then
                 echo -e "${GREEN}✓${NC}"
             else
                 echo -e "${RED}✗${NC}"
@@ -892,10 +1073,17 @@ get_credentials() {
     fi
     
     # Auto-generate hostname and path
+    # For sub-users, append sub-user suffix to mount point if no profile specified
     if [[ "$user_type" == "sub" ]]; then
         storage_hostname="$storage_username.your-storagebox.de"
         storage_path="$storage_username"
-        default_mount="${DEFAULT_MOUNT_POINT}-${storage_username##*-}"
+        # Only append sub-user suffix if not using a named profile
+        # (profile already provides unique mount point)
+        if [[ -z "$PROFILE" ]]; then
+            default_mount="${DEFAULT_MOUNT_POINT}-${storage_username##*-}"
+        else
+            default_mount="$DEFAULT_MOUNT_POINT"
+        fi
     else
         storage_hostname="${storage_username}.your-storagebox.de"
         storage_path="backup"
@@ -908,6 +1096,9 @@ get_credentials() {
     echo -e "  ${BOLD}Hostname:${NC} $storage_hostname"
     echo -e "  ${BOLD}Path:${NC}     ${storage_path:-'/ (root)'}"
     echo -e "  ${BOLD}Type:${NC}     ${user_type^} User"
+    if [[ -n "$PROFILE" ]]; then
+        echo -e "  ${BOLD}Profile:${NC}  $PROFILE"
+    fi
     echo
     
     # DNS check
@@ -1330,9 +1521,17 @@ create_systemd_mount() {
     unit_name=$(systemd-escape -p "$mount_point").mount
     local unit_file="/etc/systemd/system/$unit_name"
     
+    # Build description with optional profile name
+    local mount_description="Hetzner Storage Box mount for $storage_username"
+    local automount_description="Automount Hetzner Storage Box for $storage_username"
+    if [[ -n "$PROFILE" ]]; then
+        mount_description="Hetzner Storage Box mount for $storage_username (profile: $PROFILE)"
+        automount_description="Automount Hetzner Storage Box for $storage_username (profile: $PROFILE)"
+    fi
+    
     cat > "$unit_file" << EOF
 [Unit]
-Description=Hetzner Storage Box mount for $storage_username
+Description=$mount_description
 After=network-online.target
 Wants=network-online.target
 
@@ -1351,7 +1550,7 @@ EOF
     local automount_file="${unit_file%.mount}.automount"
     cat > "$automount_file" << EOF
 [Unit]
-Description=Automount Hetzner Storage Box for $storage_username
+Description=$automount_description
 After=network-online.target
 Wants=network-online.target
 
@@ -1366,6 +1565,10 @@ EOF
     systemctl daemon-reload
     systemctl enable "$unit_name"
     systemctl enable "${unit_name%.mount}.automount"
+    
+    if [[ -n "$PROFILE" ]]; then
+        info "Systemd units created for profile: $PROFILE"
+    fi
     
     # If the mount point is already mounted (from test step), unmount it so
     # systemd automount can take control cleanly.
@@ -1391,6 +1594,9 @@ show_usage_recommendations() {
     header "Setup Complete!"
     
     echo -e "${GREEN}${BOLD}✓ Storage Box mounted at: $mount_point${NC}"
+    if [[ -n "$PROFILE" ]]; then
+        echo -e "${GREEN}${BOLD}  Profile: $PROFILE${NC}"
+    fi
     echo
     
     echo -e "${CYAN}${BOLD}Quick Stats:${NC}"
@@ -1406,6 +1612,9 @@ show_usage_recommendations() {
     echo -e "  ${WHITE}mount | grep $mount_point${NC}       ${GRAY}# View mount details${NC}"
     echo -e "  ${WHITE}umount $mount_point${NC}             ${GRAY}# Unmount${NC}"
     echo -e "  ${WHITE}mount $mount_point${NC}              ${GRAY}# Remount${NC}"
+    if [[ -n "$PROFILE" ]]; then
+        echo -e "  ${WHITE}$0 --list-profiles${NC}  ${GRAY}# List all profiles${NC}"
+    fi
     echo
     
     echo -e "${CYAN}${BOLD}Performance Tips:${NC}"
@@ -1415,6 +1624,9 @@ show_usage_recommendations() {
     echo
     
     echo -e "${CYAN}${BOLD}Configuration Files:${NC}"
+    if [[ -n "$PROFILE" ]]; then
+        echo -e "  Profile:     ${WHITE}$PROFILE${NC}"
+    fi
     echo -e "  Credentials: ${WHITE}$CREDENTIALS_FILE${NC}"
     echo -e "  Mount point: ${WHITE}$mount_point${NC}"
     echo -e "  Logs:        ${WHITE}$LOG_FILE${NC}"
@@ -1424,12 +1636,18 @@ show_usage_recommendations() {
     fi
     
     echo
+    if [[ -n "$PROFILE" ]]; then
+        echo -e "${CYAN}To add another storage box, use a different profile:${NC}"
+        echo -e "  ${WHITE}$0 --profile <new-name> [OPTIONS]${NC}"
+        echo
+    fi
     echo -e "${GREEN}${BOLD}Need help? Visit: https://docs.hetzner.com/robot/storage-box${NC}"
 }
 
 # Cleanup on error
 cleanup_on_error() {
-    if [[ -f "${CREDENTIALS_FILE}.tmp" ]]; then
+    # Only clean up temp file if CREDENTIALS_FILE is set
+    if [[ -n "${CREDENTIALS_FILE:-}" ]] && [[ -f "${CREDENTIALS_FILE}.tmp" ]]; then
         rm -f "${CREDENTIALS_FILE}.tmp"
     fi
     
@@ -1444,8 +1662,23 @@ main() {
     # Parse command-line arguments first
     parse_arguments "$@"
     
+    # Handle --list-profiles early (before root check for read-only operation)
+    if [[ "$LIST_PROFILES" == "true" ]]; then
+        # list_profiles can work without root for basic info
+        list_profiles
+        exit 0
+    fi
+    
+    # Compute profile-specific paths after parsing arguments
+    compute_profile_paths
+    
     # Show welcome banner
     show_welcome
+    
+    # Display profile info if using a named profile
+    if [[ -n "$PROFILE" ]]; then
+        info "Using profile: $PROFILE"
+    fi
     
     # Pre-checks
     check_root

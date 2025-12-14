@@ -51,6 +51,7 @@ curl -fsSL https://raw.githubusercontent.com/Automations-Project/Hetzner-Shells/
 | 📊 **Comprehensive Logging** | Full operation logging with timestamps, colored output, and ANSI stripping for clean logs |
 | 🛡️ **Error Handling** | Strict mode (`set -eEuo pipefail`), traps for errors/signals, retries (up to 3), automatic backups, rollback capabilities, specific failure diagnostics |
 | ⚡ **Optimizations** | Performance tuning (rsize/wsize for Hetzner network); conditional skips for existing setups; spinner for non-blocking operations |
+| 👥 **Multi-Profile Support** | Mount multiple storage boxes with different accounts using named profiles (`--profile`); each profile has separate credentials and mount points |
 
 ## 💻 Supported Systems
 
@@ -125,12 +126,34 @@ Full Help:
 sudo ./Mount-Storage-Box.sh --help
 ```
 
+## 👥 Multi-Profile Support (Multiple Storage Boxes)
+
+Mount multiple Hetzner Storage Boxes with different accounts using named profiles:
+
+```bash
+# Mount primary storage box
+sudo ./Mount-Storage-Box.sh --profile primary -n -u u123456 -f /secure/pass1.txt
+
+# Mount backup storage box with different account
+sudo ./Mount-Storage-Box.sh --profile backup -n -u u789012 -f /secure/pass2.txt
+
+# List all configured profiles
+sudo ./Mount-Storage-Box.sh --list-profiles
+```
+
+Each profile creates separate:
+- **Credentials file**: `/etc/cifs-credentials-{profile}.txt`
+- **Mount point**: `/mnt/hetzner-storage-{profile}`
+- **Systemd units**: Named with profile identifier
+
+**Without `--profile`**: Uses default paths (backward compatible with v1.0.x).
+
 ## 🏗️ Project Structure
 
 ```
 Hetzner-Shells/
 ├── Storage/
-│   └── Mount-Storage-Box.sh    # Main auto-mount script (v1.0.2)
+│   └── Mount-Storage-Box.sh    # Main auto-mount script (v1.1.0)
 ├── README.md                   # This file
 ├── LICENSE                     # MIT License
 ├── TESTING.md                  # Testing & deployment guide
