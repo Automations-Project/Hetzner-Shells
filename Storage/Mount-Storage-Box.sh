@@ -60,7 +60,7 @@ fi
 ################################################################################
 
 # Script version
-readonly VERSION="1.2.0"
+readonly VERSION="1.2.1"
 # File paths and defaults - these will be computed dynamically based on profile
 readonly CREDENTIALS_BASE="/etc/cifs-credentials"
 readonly MOUNT_POINT_BASE="/mnt/hetzner-storage"
@@ -1271,9 +1271,12 @@ get_credentials() {
     fi
     
     # Auto-generate hostname and path
-    # For sub-users, append sub-user suffix to mount point if no profile specified
+    # For sub-users, the hostname is the MAIN account, path is the sub-user
+    # Example: u493700-sub6 → hostname: u493700.your-storagebox.de, path: u493700-sub6
     if [[ "$user_type" == "sub" ]]; then
-        storage_hostname="$storage_username.your-storagebox.de"
+        # Extract main account from sub-user (u493700-sub6 → u493700)
+        local main_account="${storage_username%%-sub*}"
+        storage_hostname="${main_account}.your-storagebox.de"
         storage_path="$storage_username"
         # Only append sub-user suffix if not using a named profile
         # (profile already provides unique mount point)
