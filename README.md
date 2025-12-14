@@ -128,7 +128,31 @@ sudo ./Mount-Storage-Box.sh --help
 
 ## 👥 Multi-Profile Support (Multiple Storage Boxes)
 
-Mount multiple Hetzner Storage Boxes with different accounts using named profiles:
+Mount multiple Hetzner Storage Boxes with different accounts using named profiles.
+
+### Interactive Mode (Recommended)
+
+Simply run the script and follow the prompts:
+
+```bash
+sudo ./Mount-Storage-Box.sh
+```
+
+When existing profiles are detected, you'll see:
+```
+▶ Profile Selection
+────────────────────────────────────────
+
+Existing profiles found:
+  1) (default) (user: u493700-sub5)
+  2) backup (user: u789012)
+  n) Create new profile
+  d) Use default (no profile)
+
+❓ Select option [1-2, n, or d]:
+```
+
+### Non-Interactive Mode
 
 ```bash
 # Mount primary storage box
@@ -153,7 +177,7 @@ Each profile creates separate:
 ```
 Hetzner-Shells/
 ├── Storage/
-│   └── Mount-Storage-Box.sh    # Main auto-mount script (v1.1.0)
+│   └── Mount-Storage-Box.sh    # Main auto-mount script (v1.2.0)
 ├── README.md                   # This file
 ├── LICENSE                     # MIT License
 ├── TESTING.md                  # Testing & deployment guide

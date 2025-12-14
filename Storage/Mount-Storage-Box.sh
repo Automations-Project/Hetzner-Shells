@@ -3,7 +3,7 @@
 ################################################################################
 # Hetzner Storage Box Auto-Mount Script
 # Production Version with Advanced Features
-# Version: 1.1.3
+# Version: 1.2.0
 # Author: Nskha Automation Projects - Hetzner Community Edition
 # License: MIT
 #
@@ -60,7 +60,7 @@ fi
 ################################################################################
 
 # Script version
-readonly VERSION="1.1.3"
+readonly VERSION="1.2.0"
 # File paths and defaults - these will be computed dynamically based on profile
 readonly CREDENTIALS_BASE="/etc/cifs-credentials"
 readonly MOUNT_POINT_BASE="/mnt/hetzner-storage"
@@ -284,6 +284,140 @@ compute_profile_paths() {
         CREDENTIALS_FILE="${CREDENTIALS_BASE}.txt"
         DEFAULT_MOUNT_POINT="${MOUNT_POINT_BASE}"
     fi
+}
+
+# Interactive profile selection
+# Prompts user to select or create a profile in interactive mode
+# Only called when NON_INTERACTIVE=false and PROFILE is not set via CLI
+select_profile_interactive() {
+    # Skip if non-interactive or profile already set via command line
+    if [[ "$NON_INTERACTIVE" == "true" ]] || [[ -n "$PROFILE" ]]; then
+        return 0
+    fi
+    
+    # Detect existing profiles
+    local existing_profiles=()
+    local profile_names=()
+    
+    while IFS= read -r -d '' cred_file; do
+        local filename
+        filename=$(basename "$cred_file")
+        
+        if [[ "$filename" == "cifs-credentials.txt" ]]; then
+            existing_profiles+=("default")
+            profile_names+=("(default)")
+        elif [[ "$filename" =~ ^cifs-credentials-(.+)\.txt$ ]]; then
+            existing_profiles+=("${BASH_REMATCH[1]}")
+            profile_names+=("${BASH_REMATCH[1]}")
+        fi
+    done < <(find /etc -maxdepth 1 -name "cifs-credentials*.txt" -print0 2>/dev/null)
+    
+    local has_existing=${#existing_profiles[@]}
+    
+    # If no existing profiles, offer simple choice
+    if [[ $has_existing -eq 0 ]]; then
+        echo -e "${CYAN}${BOLD}▶ Profile Selection${NC}"
+        echo -e "${GRAY}$(printf '─%.0s' {1..40})${NC}"
+        echo
+        echo "Profiles allow mounting multiple storage boxes with different accounts."
+        echo "Each profile has separate credentials and mount points."
+        echo
+        question "Enter profile name (or press Enter for default): "
+        read -r profile_input </dev/tty
+        
+        if [[ -z "$profile_input" ]]; then
+            # Use default - no profile name
+            info "Using default configuration (no profile)"
+        else
+            # Validate profile name
+            if [[ ! "$profile_input" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+                warning "Invalid profile name. Using alphanumeric, dash, underscore only."
+                question "Enter valid profile name: "
+                read -r profile_input </dev/tty
+                if [[ ! "$profile_input" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+                    error_exit "Invalid profile name: $profile_input"
+                fi
+            fi
+            PROFILE="$profile_input"
+            info "Creating new profile: $PROFILE"
+        fi
+    else
+        # Existing profiles found - show options
+        echo -e "${CYAN}${BOLD}▶ Profile Selection${NC}"
+        echo -e "${GRAY}$(printf '─%.0s' {1..40})${NC}"
+        echo
+        echo -e "${WHITE}Existing profiles found:${NC}"
+        
+        local i=1
+        for pname in "${profile_names[@]}"; do
+            local cred_file
+            if [[ "$pname" == "(default)" ]]; then
+                cred_file="${CREDENTIALS_BASE}.txt"
+            else
+                cred_file="${CREDENTIALS_BASE}-${pname}.txt"
+            fi
+            local username
+            username=$(grep '^username=' "$cred_file" 2>/dev/null | cut -d'=' -f2 || echo "unknown")
+            echo -e "  ${CYAN}$i)${NC} $pname ${GRAY}(user: $username)${NC}"
+            ((i++))
+        done
+        echo -e "  ${CYAN}n)${NC} Create new profile"
+        echo -e "  ${CYAN}d)${NC} Use default (no profile)"
+        echo
+        
+        question "Select option [1-$((i-1)), n, or d]: "
+        read -r selection </dev/tty
+        
+        case "$selection" in
+            [1-9]|[1-9][0-9])
+                # Numeric selection
+                local idx=$((selection - 1))
+                if [[ $idx -ge 0 ]] && [[ $idx -lt ${#existing_profiles[@]} ]]; then
+                    local selected="${existing_profiles[$idx]}"
+                    if [[ "$selected" == "default" ]]; then
+                        info "Using default configuration"
+                        PROFILE=""
+                    else
+                        PROFILE="$selected"
+                        info "Using existing profile: $PROFILE"
+                    fi
+                else
+                    warning "Invalid selection. Using default."
+                fi
+                ;;
+            n|N)
+                # Create new profile
+                question "Enter new profile name: "
+                read -r profile_input </dev/tty
+                if [[ -z "$profile_input" ]]; then
+                    warning "Empty profile name. Using default."
+                elif [[ ! "$profile_input" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+                    error_exit "Invalid profile name: $profile_input. Use alphanumeric, dash, underscore only."
+                else
+                    # Check if profile already exists
+                    for existing in "${existing_profiles[@]}"; do
+                        if [[ "$existing" == "$profile_input" ]]; then
+                            warning "Profile '$profile_input' already exists. Will update it."
+                            break
+                        fi
+                    done
+                    PROFILE="$profile_input"
+                    info "Creating new profile: $PROFILE"
+                fi
+                ;;
+            d|D|"")
+                # Use default
+                info "Using default configuration (no profile)"
+                PROFILE=""
+                ;;
+            *)
+                warning "Invalid selection. Using default."
+                PROFILE=""
+                ;;
+        esac
+    fi
+    
+    echo
 }
 
 # List all configured profiles
@@ -1761,15 +1895,21 @@ main() {
         exit 0
     fi
     
-    # Compute profile-specific paths after parsing arguments
-    compute_profile_paths
-    
     # Show welcome banner
     show_welcome
+    
+    # Interactive profile selection (only in interactive mode, only if not set via CLI)
+    select_profile_interactive
+    
+    # Compute profile-specific paths after profile selection
+    compute_profile_paths
     
     # Display profile info if using a named profile
     if [[ -n "$PROFILE" ]]; then
         info "Using profile: $PROFILE"
+        info "  Credentials: $CREDENTIALS_FILE"
+        info "  Mount point: $DEFAULT_MOUNT_POINT"
+        echo
     fi
     
     # Pre-checks
