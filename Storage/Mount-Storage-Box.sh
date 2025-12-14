@@ -3,7 +3,7 @@
 ################################################################################
 # Hetzner Storage Box Auto-Mount Script
 # Production Version with Advanced Features
-# Version: 1.1.2
+# Version: 1.1.3
 # Author: Nskha Automation Projects - Hetzner Community Edition
 # License: MIT
 #
@@ -60,7 +60,7 @@ fi
 ################################################################################
 
 # Script version
-readonly VERSION="1.1.2"
+readonly VERSION="1.1.3"
 # File paths and defaults - these will be computed dynamically based on profile
 readonly CREDENTIALS_BASE="/etc/cifs-credentials"
 readonly MOUNT_POINT_BASE="/mnt/hetzner-storage"
@@ -905,7 +905,8 @@ install_packages() {
             # If not, we need linux-modules-extra package (common in containers/VMs)
             if ! modprobe cifs &>/dev/null; then
                 # shellcheck disable=SC2155
-                local kernel_pkg="linux-modules-extra-$(uname -r)"
+                local kernel_pkg
+                kernel_pkg="linux-modules-extra-$(uname -r)"
                 if apt-cache show "$kernel_pkg" &>/dev/null; then
                     info "CIFS kernel module not loaded, adding $kernel_pkg"
                     packages+=("$kernel_pkg")
@@ -1001,8 +1002,28 @@ install_packages() {
         if modprobe nls_utf8 2>/dev/null; then
             success "NLS UTF-8 module loaded"
         else
-            warning "Could not load nls_utf8 module. Mount may fail with 'iocharset utf8 not found'."
-            warning "Try: modprobe nls_utf8 or install linux-modules-extra-$(uname -r)"
+            warning "nls_utf8 module not available. Attempting to install kernel modules package."
+            if [[ "$PACKAGE_MANAGER" == "apt" ]]; then
+                local kernel_pkg
+                kernel_pkg="linux-modules-extra-$(uname -r)"
+                if apt-cache show "$kernel_pkg" &>/dev/null; then
+                    info "Installing $kernel_pkg for UTF-8 support..."
+                    if apt-get install -y "$kernel_pkg" &>/dev/null; then
+                        info "Retrying to load nls_utf8..."
+                        if modprobe nls_utf8 2>/dev/null; then
+                            success "NLS UTF-8 module loaded after installing $kernel_pkg"
+                        else
+                            error_exit "Failed to load nls_utf8 even after installing $kernel_pkg. Please reboot and try again."
+                        fi
+                    else
+                        error_exit "Failed to install $kernel_pkg. Cannot load nls_utf8."
+                    fi
+                else
+                    error_exit "Package $kernel_pkg not found. Cannot load nls_utf8."
+                fi
+            else
+                error_exit "nls_utf8 module missing. Install the UTF-8 NLS kernel module for your kernel and retry."
+            fi
         fi
     else
         success "NLS UTF-8 module already loaded"
