@@ -60,7 +60,7 @@ fi
 ################################################################################
 
 # Script version
-readonly VERSION="1.1.0"
+readonly VERSION="1.1.1"
 # File paths and defaults - these will be computed dynamically based on profile
 readonly CREDENTIALS_BASE="/etc/cifs-credentials"
 readonly MOUNT_POINT_BASE="/mnt/hetzner-storage"
