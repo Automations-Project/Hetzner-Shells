@@ -1842,7 +1842,7 @@ show_usage_recommendations() {
     echo -e "  ${WHITE}umount $mount_point${NC}             ${GRAY}# Unmount${NC}"
     echo -e "  ${WHITE}mount $mount_point${NC}              ${GRAY}# Remount${NC}"
     if [[ -n "$PROFILE" ]]; then
-        echo -e "  ${WHITE}$0 --list-profiles${NC}  ${GRAY}# List all profiles${NC}"
+        echo -e "  ${WHITE}Mount-Storage-Box.sh --list-profiles${NC}  ${GRAY}# List all profiles${NC}"
     fi
     echo
     
@@ -1867,7 +1867,7 @@ show_usage_recommendations() {
     echo
     if [[ -n "$PROFILE" ]]; then
         echo -e "${CYAN}To add another storage box, use a different profile:${NC}"
-        echo -e "  ${WHITE}$0 --profile <new-name> [OPTIONS]${NC}"
+        echo -e "  ${WHITE}Mount-Storage-Box.sh --profile <new-name> [OPTIONS]${NC}"
         echo
     fi
     echo -e "${GREEN}${BOLD}Need help? Visit: https://docs.hetzner.com/robot/storage-box${NC}"
