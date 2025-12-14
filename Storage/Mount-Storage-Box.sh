@@ -3,7 +3,7 @@
 ################################################################################
 # Hetzner Storage Box Auto-Mount Script
 # Production Version with Advanced Features
-# Version: 1.1.1
+# Version: 1.1.2
 # Author: Nskha Automation Projects - Hetzner Community Edition
 # License: MIT
 #
@@ -60,7 +60,7 @@ fi
 ################################################################################
 
 # Script version
-readonly VERSION="1.1.1"
+readonly VERSION="1.1.2"
 # File paths and defaults - these will be computed dynamically based on profile
 readonly CREDENTIALS_BASE="/etc/cifs-credentials"
 readonly MOUNT_POINT_BASE="/mnt/hetzner-storage"
@@ -584,7 +584,7 @@ check_network() {
     local test_hosts=(
         "your-storagebox.de:Hetzner Storage"
         "8.8.8.8:Google DNS"
-        "1.1.1.1:Cloudflare DNS"
+        "1.1.2.1:Cloudflare DNS"
     )
     
     for host_info in "${test_hosts[@]}"; do
@@ -971,6 +971,18 @@ install_packages() {
         error_exit "mount.cifs not found after installation"
     fi
     
+    # Check for missing shared libraries (error 79 prevention)
+    # This catches issues where mount.cifs binary exists but required libs are missing
+    local missing_libs
+    if command -v ldd >/dev/null 2>&1; then
+        missing_libs=$(ldd "$(command -v mount.cifs)" 2>/dev/null | grep "not found" || true)
+        if [[ -n "$missing_libs" ]]; then
+            warning "Missing shared libraries for mount.cifs:"
+            echo "$missing_libs"
+            error_exit "mount.cifs has missing dependencies. Try: apt reinstall cifs-utils"
+        fi
+    fi
+    
     # Ensure CIFS kernel module is loaded
     if ! lsmod | grep -q "^cifs"; then
         info "Loading CIFS kernel module..."
@@ -981,6 +993,19 @@ install_packages() {
         fi
     else
         success "CIFS kernel module already loaded"
+    fi
+    
+    # Ensure NLS UTF-8 module is loaded (required for iocharset=utf8 mount option)
+    if ! lsmod | grep -q "^nls_utf8"; then
+        info "Loading NLS UTF-8 kernel module..."
+        if modprobe nls_utf8 2>/dev/null; then
+            success "NLS UTF-8 module loaded"
+        else
+            warning "Could not load nls_utf8 module. Mount may fail with 'iocharset utf8 not found'."
+            warning "Try: modprobe nls_utf8 or install linux-modules-extra-$(uname -r)"
+        fi
+    else
+        success "NLS UTF-8 module already loaded"
     fi
 }
 
@@ -1373,6 +1398,34 @@ test_smb_versions() {
     done
     
     if [[ -z "$working_version" ]]; then
+        # Check for specific error codes and provide helpful messages
+        if echo "$last_error" | grep -q "error(79)"; then
+            echo
+            warning "Error 79 indicates missing shared libraries or kernel modules."
+            
+            # Check dmesg for more specific error
+            local dmesg_error
+            dmesg_error=$(dmesg 2>/dev/null | tail -10 | grep -i "cifs" || true)
+            
+            if echo "$dmesg_error" | grep -q "iocharset utf8 not found"; then
+                warning "Specific issue: NLS UTF-8 kernel module is not loaded!"
+                echo
+                info "Fix with:"
+                echo "  modprobe nls_utf8"
+                echo
+            else
+                info "Please run these commands to diagnose:"
+                echo "  ldd \$(which mount.cifs) | grep 'not found'"
+                echo "  dmesg | tail -20 | grep -i cifs"
+                echo
+                info "Common fixes:"
+                echo "  modprobe nls_utf8          # For iocharset=utf8 support"
+                echo "  apt reinstall cifs-utils"
+                echo "  apt install linux-modules-extra-\$(uname -r)"
+                echo "  modprobe cifs"
+            fi
+            echo
+        fi
         error_exit "No compatible SMB version found. Last error: $last_error"
     fi
     
